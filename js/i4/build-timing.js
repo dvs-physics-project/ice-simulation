@@ -1,176 +1,235 @@
+/*
+ * Рядный двигатель: зубчатый ремень ГРМ, натяжитель, насос охлаждения и кожух ремня.
+ *
+ *   beltToothPhases(spec, solution) — где на ремне стоит первый зуб и как повернуть зубья каждого шкива,
+ *                                     чтобы они попадали между зубьями ремня;
+ *   timingBelt(context, belt) → { objects, cover, update(crankAngle) }
+ *     Ремень — лента по пути из Belt.layout плюс 137 зубьев (InstancedMesh). При повороте вала на угол θ
+ *     ремень сдвигается на дугу θ·R шкива коленвала; ролик натяжителя и шкив насоса вращаются
+ *     в отношении радиусов.
+ */
 (function () {
 'use strict';
-window.BUILD_I4 = window.BUILD_I4 || {};
-const V3 = THREE.Vector3;
 
-BUILD_I4.beltPhases = function (E, sol) {
-  const path = sol.path, p = E.beltPitch;
-  const arcOf = key => path.pieces.find(pc => pc.type === 'arc' && pc.pulley.key === key);
+const Geometry = window.Geometry;
+const Belt = window.Belt;
+const Vector3 = THREE.Vector3;
+
+function beltToothPhases(spec, solution) {
+  const path = solution.path;
+  const arcOf = name => path.pieces.find(piece => piece.type === 'arc' && piece.pulley.name === name);
+  const angleOnPulley = (arc, distance) => {
+    const point = Belt.pointAt(path, distance);
+    return Math.atan2(point.v - arc.pulley.v, point.u - arc.pulley.u);
+  };
+
   const crankArc = arcOf('crank');
-  const sTooth0 = crankArc.s0 + crankArc.len / 2;
-  const phase = {};
-  const at = (pc, s) => { const q = E.beltSample(path, s); return Math.atan2(q.v - pc.pulley.v, q.u - pc.pulley.u); };
-  phase.crank = at(crankArc, sTooth0);
-  for (const key of ['camIn', 'camEx', 'pump']) {
-    const pc = arcOf(key);
-    const mid = pc.s0 + pc.len / 2;
-    const j = Math.round((mid - sTooth0) / p);
-    phase[key] = at(pc, sTooth0 + j * p);
+  const firstToothDistance = crankArc.startDistance + crankArc.length / 2;
+  const toothPhase = { crank: angleOnPulley(crankArc, firstToothDistance) };
+  for (const name of ['camIntake', 'camExhaust', 'pump']) {
+    const arc = arcOf(name);
+    const middle = arc.startDistance + arc.length / 2;
+    const nearestTooth = Math.round((middle - firstToothDistance) / spec.beltPitch);
+    toothPhase[name] = angleOnPulley(arc, firstToothDistance + nearestTooth * spec.beltPitch);
   }
-  return { sTooth0, phase };
-};
+  return { firstToothDistance, toothPhase };
+}
 
-BUILD_I4.timing = function (ctx) {
-  const E = ctx.E, MM = ctx.M, M = MM.mat, sol = ctx.belt.sol, path = sol.path;
-  const out = {};
-  const L = path.length, X0 = E.beltX - E.beltW / 2, X1 = E.beltX + E.beltW / 2;
-
-  const nS = Math.round(L / 2);
-  const pos = [], nor = [], idx = [];
+function beltBand(spec, path) {
+  const length = path.length;
+  const x0 = spec.beltX - spec.beltWidth / 2, x1 = spec.beltX + spec.beltWidth / 2;
+  const samples = Math.round(length / 2);
   const ring = [];
-  for (let k = 0; k < nS; k++) {
-    const q = E.beltSample(path, k / nS * L);
-    const inner = [q.u + q.nu * E.beltIn, q.v + q.nv * E.beltIn];
-    const outer = [q.u - q.nu * E.beltBack, q.v - q.nv * E.beltBack];
-    ring.push({ inner, outer, nu: q.nu, nv: q.nv });
+  for (let k = 0; k < samples; k++) {
+    const point = Belt.pointAt(path, k / samples * length);
+    ring.push({
+      inner: [point.u + point.normalU * spec.beltToothOffset, point.v + point.normalV * spec.beltToothOffset],
+      outer: [point.u - point.normalU * spec.beltBackThickness, point.v - point.normalV * spec.beltBackThickness],
+      normalU: point.normalU, normalV: point.normalV,
+    });
   }
   const faces = [
-    s => [[X0, ...s.outer], [X1, ...s.outer], [0, -s.nu, -s.nv]],
-    s => [[X1, ...s.inner], [X0, ...s.inner], [0, s.nu, s.nv]],
-    s => [[X0, ...s.inner], [X0, ...s.outer], [-1, 0, 0]],
-    s => [[X1, ...s.outer], [X1, ...s.inner], [1, 0, 0]],
+    s => [[x0, ...s.outer], [x1, ...s.outer], [0, -s.normalU, -s.normalV]],
+    s => [[x1, ...s.inner], [x0, ...s.inner], [0, s.normalU, s.normalV]],
+    s => [[x0, ...s.inner], [x0, ...s.outer], [-1, 0, 0]],
+    s => [[x1, ...s.outer], [x1, ...s.inner], [1, 0, 0]],
   ];
-  faces.forEach((f, fi) => {
-    const base = pos.length / 3;
-    ring.forEach(s => {
-      const [a, b, n] = f(s);
-      pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-      nor.push(...n, ...n);
+  const positions = [], normals = [], indices = [];
+  faces.forEach(face => {
+    const base = positions.length / 3;
+    ring.forEach(sample => {
+      const [a, b, normal] = face(sample);
+      positions.push(...a, ...b);
+      normals.push(...normal, ...normal);
     });
-    for (let k = 0; k < nS; k++) {
-      const a = base + k * 2, b = base + ((k + 1) % nS) * 2;
-      idx.push(a, b + 1, a + 1, a, b, b + 1);
+    for (let k = 0; k < samples; k++) {
+      const a = base + k * 2, b = base + ((k + 1) % samples) * 2;
+      indices.push(a, b + 1, a + 1, a, b, b + 1);
     }
   });
-  const band = new THREE.BufferGeometry();
-  band.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  band.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  band.setIndex(idx);
-  const bandMat = M.belt.clone(); bandMat.side = THREE.DoubleSide; bandMat.userData.key = 'belt';
-  M.beltBand = bandMat;
-  const bandMesh = new THREE.Mesh(band, bandMat);
-  ctx.tag(bandMesh, 'belt', 'timing');
-  bandMesh.castShadow = bandMesh.receiveShadow = true;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  return geometry;
+}
 
-  const ts = new THREE.Shape();
-  ts.moveTo(-2.6, -0.2); ts.lineTo(2.6, -0.2); ts.lineTo(1.85, E.toothH - 0.9);
-  ts.quadraticCurveTo(1.5, E.toothH, 0, E.toothH); ts.quadraticCurveTo(-1.5, E.toothH, -1.85, E.toothH - 0.9);
-  ts.closePath();
-  const tg = new THREE.ExtrudeGeometry(ts, { depth: E.beltW, bevelEnabled: false, curveSegments: 4 });
-  tg.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -E.beltW / 2, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 1));
-  const teeth = new THREE.InstancedMesh(tg, M.beltTooth, sol.N);
+function beltTooth(spec) {
+  const height = spec.beltToothHeight;
+  const outline = new THREE.Shape();
+  outline.moveTo(-2.6, -0.2);
+  outline.lineTo(2.6, -0.2);
+  outline.lineTo(1.85, height - 0.9);
+  outline.quadraticCurveTo(1.5, height, 0, height);
+  outline.quadraticCurveTo(-1.5, height, -1.85, height - 0.9);
+  outline.closePath();
+  const geometry = new THREE.ExtrudeGeometry(outline, { depth: spec.beltWidth, bevelEnabled: false, curveSegments: 4 });
+  geometry.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, -spec.beltWidth / 2, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 1));
+  return geometry;
+}
+
+function tensionerAssembly(spec, solid, tag, solution) {
+  const roller = solution.pulleys.find(pulley => pulley.name === 'tensioner');
+  const { pivot, rollerRadius: R } = spec.tensioner;
+  const assembly = new THREE.Group();
+  assembly.position.set(spec.beltX, roller.u, roller.v);
+
+  const rollerBody = Geometry.lathe([[8.5, -13], [R - 1.2, -13], [R, -11.8], [R, 11.8], [R - 1.2, 13], [8.5, 13], [8.5, -13]],
+    64, 0, undefined, true);
+  Geometry.rotateToX(rollerBody);
+  const rivets = Array.from({ length: 6 }, (_, k) => {
+    const angle = k / 6 * Math.PI * 2;
+    const rivet = Geometry.cylinderAlongX(2.2, -13.7, -12.6, 12);
+    rivet.translate(0, 18 * Math.cos(angle), 18 * Math.sin(angle));
+    return rivet;
+  });
+  const rollerMesh = tag(new THREE.Mesh(Geometry.mergeGeometries([rollerBody, ...rivets]), solid.tensRoller), 'tensioner', 'timing');
+  const spinning = new THREE.Group();
+  spinning.add(rollerMesh);
+  assembly.add(spinning);
+
+  const hubNut = Geometry.hexPrism(13, 7);
+  Geometry.rotateToX(hubNut);
+  hubNut.translate(-22.5, 0, 0);
+  const hub = tag(new THREE.Mesh(Geometry.mergeGeometries([
+    Geometry.tubeAlongX(5, 8.5, -13, 13, 32), Geometry.tubeAlongX(5, 12, -15.5, -13, 32), hubNut,
+  ]), solid.tensArm), 'tensioner', 'timing');
+  assembly.add(hub);
+
+  const armLength = Math.hypot(roller.u - pivot.u, roller.v - pivot.v);
+  const armAngle = Math.atan2(roller.v - pivot.v, roller.u - pivot.u);
+  const armOutline = new THREE.Shape();
+  armOutline.absarc(0, 0, 13, Math.PI / 2, Math.PI * 1.5, false);
+  armOutline.lineTo(armLength, -11);
+  armOutline.absarc(armLength, 0, 11, -Math.PI / 2, Math.PI / 2, false);
+  armOutline.lineTo(0, 13);
+  armOutline.holes.push(Geometry.circleHole(0, 0, 5, true));
+  const arm = new THREE.ExtrudeGeometry(armOutline,
+    { depth: 6, bevelEnabled: true, bevelThickness: 0.6, bevelSize: 0.6, bevelSegments: 1, curveSegments: 16 });
+  arm.rotateZ(armAngle);
+  arm.translate(pivot.u, pivot.v, spec.beltX + spec.beltWidth / 2 + 2.2);
+  Geometry.shapeToYZ(arm);
+
+  const pivotNut = Geometry.hexPrism(14, 7);
+  Geometry.rotateToX(pivotNut);
+  pivotNut.translate(-211, 0, 0);
+  pivotNut.translate(0, pivot.u, pivot.v);
+  const pivotPin = Geometry.cylinderAlongX(5, -204, -182, 16);
+  pivotPin.translate(0, pivot.u, pivot.v);
+  const armMesh = tag(new THREE.Mesh(Geometry.mergeGeometries([arm, Geometry.mergeGeometries([pivotNut, pivotPin])]), solid.tensArm),
+    'tensioner', 'timing');
+  [rollerMesh, hub, armMesh].forEach(mesh => { mesh.castShadow = mesh.receiveShadow = true; });
+  return { assembly, spinning, armMesh };
+}
+
+function coolantPump(spec, solid, tag, solution, toothPhase) {
+  const pulleyPosition = solution.pulleys.find(pulley => pulley.name === 'pump');
+  const x0 = spec.beltX - spec.beltWidth / 2, x1 = spec.beltX + spec.beltWidth / 2;
+  const radius = spec.pitchRadius(spec.teeth.pump);
+  const pump = new THREE.Group();
+  pump.position.set(0, pulleyPosition.u, pulleyPosition.v);
+
+  const nut = Geometry.hexPrism(10, 5);
+  Geometry.rotateToX(nut);
+  nut.translate(x0 - 7, 0, 0);
+  const outline = Geometry.timingPulleyShape(spec.teeth.pump, radius, { phase: toothPhase, holes: [Geometry.circleHole(0, 0, 8, true)] });
+  const pulley = tag(new THREE.Mesh(Geometry.mergeGeometries([
+    Geometry.extrudeAlongX(outline, x0 - 0.5, x1 + 0.5, { curveSegments: 16 }),
+    Geometry.tubeAlongX(8, radius + 3.6, x0 - 2, x0 - 0.5, 40),
+    Geometry.tubeAlongX(8, radius + 3.6, x1 + 0.5, x1 + 2, 40),
+    nut,
+  ]), solid.pumpPulley), 'coolantPump', 'timing');
+  pulley.castShadow = pulley.receiveShadow = true;
+  const spinning = new THREE.Group();
+  spinning.add(pulley);
+  pump.add(spinning);
+
+  const body = tag(new THREE.Mesh(Geometry.mergeGeometries([
+    Geometry.tubeAlongX(0, 50, -203, -184, 64),
+    Geometry.tubeAlongX(0, 30, -207, -203, 48),
+    Geometry.cylinderBetween(13, new Vector3(-193, 0, 40), new Vector3(-193, -38, 74), 24),
+  ]), solid.pumpBody), 'coolantPump', 'aux');
+  body.castShadow = body.receiveShadow = true;
+  pump.add(body);
+  return { pump, spinning, radius };
+}
+
+function beltCover(spec, materials, tag, solution) {
+  const outlinePoints = [];
+  solution.pulleys.forEach(pulley => {
+    for (let k = 0; k < 48; k++) {
+      const angle = k / 48 * Math.PI * 2;
+      outlinePoints.push([pulley.u + (pulley.radius + 14) * Math.cos(angle), pulley.v + (pulley.radius + 14) * Math.sin(angle)]);
+    }
+  });
+  const geometry = Geometry.extrudeAlongX(Geometry.polygonShape(Geometry.convexHull(outlinePoints)), spec.beltX - 26, spec.beltX + 18, { curveSegments: 1 });
+  const cover = new THREE.Mesh(geometry, materials.ghost.tcover);
+  cover.renderOrder = 2;
+  tag(cover, 'tcover', 'housing');
+  const edges = tag(new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), materials.ghostEdges.tcover), 'tcover', 'housing');
+  return [cover, edges];
+}
+
+function timingBelt({ spec, materials, tag }, belt) {
+  const solid = materials.solid;
+  const { solution, toothPhase, firstToothDistance } = belt;
+
+  const bandMaterial = solid.belt.clone();
+  bandMaterial.side = THREE.DoubleSide;
+  const band = tag(new THREE.Mesh(beltBand(spec, solution.path), bandMaterial), 'belt', 'timing');
+  band.castShadow = band.receiveShadow = true;
+
+  const teeth = new THREE.InstancedMesh(beltTooth(spec), solid.beltTooth, solution.teethCount);
   teeth.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  ctx.tag(teeth, 'belt', 'timing');
+  tag(teeth, 'belt', 'timing');
   teeth.castShadow = teeth.receiveShadow = true;
 
-  const tp = sol.pulleys.find(p => p.key === 'tens'), T = E.tensioner;
-  const tens = new THREE.Group();
-  tens.position.set(E.beltX, tp.u, tp.v);
-  const roller = G.lathe([[8.5, -13], [T.R - 1.2, -13], [T.R, -11.8], [T.R, 11.8], [T.R - 1.2, 13], [8.5, 13], [8.5, -13]],
-    64, 0, undefined, true);
-  G.toX(roller);
-  const rivets = Array.from({ length: 6 }, (_, k) => { const a = k / 6 * Math.PI * 2; const g = G.cylX(2.2, -13.7, -12.6, 12);
-    g.translate(0, 18 * Math.cos(a), 18 * Math.sin(a)); return g; });
-  const rollerMesh = new THREE.Mesh(G.merge([roller, ...rivets]), M.tensRoller);
-  ctx.tag(rollerMesh, 'tensioner', 'timing');
-  const spin = new THREE.Group();
-  spin.add(rollerMesh);
-  tens.add(spin);
-  const hub = new THREE.Mesh(G.merge([
-    G.tubeX(5, 8.5, -13, 13, 32),
-    G.tubeX(5, 12, -15.5, -13, 32),
-    (() => { const g = G.hexPrism(13, 7); G.toX(g); g.translate(-22.5, 0, 0); return g; })(),
-  ]), M.tensArm);
-  ctx.tag(hub, 'tensioner', 'timing');
-  tens.add(hub);
-  const du = tp.u - T.pivot.u, dv = tp.v - T.pivot.v, len = Math.hypot(du, dv), ang = Math.atan2(dv, du);
-  const arm = new THREE.Shape();
-  arm.absarc(0, 0, 13, Math.PI / 2, Math.PI * 1.5, false);
-  arm.lineTo(len, -11); arm.absarc(len, 0, 11, -Math.PI / 2, Math.PI / 2, false); arm.lineTo(0, 13);
-  arm.holes.push(G.circlePath(0, 0, 5, true));
-  const armGeo = new THREE.ExtrudeGeometry(arm, { depth: 6, bevelEnabled: true, bevelThickness: 0.6, bevelSize: 0.6, bevelSegments: 1, curveSegments: 16 });
-  armGeo.rotateZ(ang); armGeo.translate(T.pivot.u, T.pivot.v, X1 + 2.2);
-  G.shapeToYZ(armGeo);
-  const pivotBolt = G.merge([
-    (() => { const g = G.hexPrism(14, 7); G.toX(g); g.translate(-211, 0, 0); g.translate(0, T.pivot.u, T.pivot.v); return g; })(),
-    (() => { const g = G.cylX(5, -204, -182, 16); g.translate(0, T.pivot.u, T.pivot.v); return g; })(),
-  ]);
-  const armMesh = new THREE.Mesh(G.merge([armGeo, pivotBolt]), M.tensArm);
-  ctx.tag(armMesh, 'tensioner', 'timing');
-  [rollerMesh, hub, armMesh].forEach(m => { m.castShadow = m.receiveShadow = true; });
+  const tensioner = tensionerAssembly(spec, solid, tag, solution);
+  const pump = coolantPump(spec, solid, tag, solution, toothPhase.pump);
+  const cover = beltCover(spec, materials, tag, solution);
 
-  const pp = sol.pulleys.find(p => p.key === 'pump');
-  const pump = new THREE.Group();
-  pump.position.set(0, pp.u, pp.v);
-  const Rp = E.pd(E.z.pump) / 2;
-  const pumpPulley = new THREE.Mesh(G.merge([
-    G.extrudeX(G.timingPulleyShape(E.z.pump, Rp, { phase: ctx.belt.phase.pump, holes: [G.circlePath(0, 0, 8, true)] }), X0 - 0.5, X1 + 0.5, { curveSegments: 16 }),
-    G.tubeX(8, Rp + 3.6, X0 - 2, X0 - 0.5, 40), G.tubeX(8, Rp + 3.6, X1 + 0.5, X1 + 2, 40),
-    (() => { const g = G.hexPrism(10, 5); G.toX(g); g.translate(X0 - 7, 0, 0); return g; })(),
-  ]), M.pumpPulley);
-  ctx.tag(pumpPulley, 'coolantPump', 'timing');
-  pumpPulley.castShadow = pumpPulley.receiveShadow = true;
-  const pumpSpin = new THREE.Group(); pumpSpin.add(pumpPulley); pump.add(pumpSpin);
-  const volute = G.merge([
-    G.tubeX(0, 50, -203, -184, 64),
-    G.tubeX(0, 30, -207, -203, 48),
-    (() => { const g = G.cylBetween(13, new V3(-193, 0, 40), new V3(-193, -38, 74), 24); return g; })(),
-  ]);
-  const pumpBody = new THREE.Mesh(volute, M.pumpBody);
-  ctx.tag(pumpBody, 'coolantPump', 'aux');
-  pumpBody.castShadow = pumpBody.receiveShadow = true;
-  pump.add(pumpBody);
+  const crankPulleyRadius = spec.pitchRadius(spec.teeth.crank);
+  const matrix = new THREE.Matrix4(), axisX = new Vector3(1, 0, 0), axisY = new Vector3(), axisZ = new Vector3(), position = new Vector3();
 
-  const hullPts = [];
-  sol.pulleys.forEach(p => { for (let k = 0; k < 48; k++) { const a = k / 48 * Math.PI * 2; hullPts.push([p.u + (p.R + 14) * Math.cos(a), p.v + (p.R + 14) * Math.sin(a)]); } });
-  const hull = convexHull(hullPts);
-  const coverShape = G.shapeFromPts(hull);
-  const coverGeo = G.extrudeX(coverShape, E.beltX - 26, E.beltX + 18, { curveSegments: 1 });
-  const cover = new THREE.Mesh(coverGeo, MM.ghost.tcover);
-  cover.renderOrder = 2;
-  ctx.tag(cover, 'tcover', 'housing');
-  const coverEdges = new THREE.LineSegments(new THREE.EdgesGeometry(coverGeo, 25), MM.ghostEdges.tcover);
-  ctx.tag(coverEdges, 'tcover', 'housing');
-  out.cover = [cover, coverEdges];
-
-  out.objects = [bandMesh, teeth, tens, armMesh, pump];
-
-  const m4 = new THREE.Matrix4(), bx = new V3(1, 0, 0), by = new V3(), bz = new V3(), p0 = new V3();
-  const Rc = E.pd(E.z.crank) / 2;
-  out.update = function (theta) {
-    const shift = theta * Rc;
-    for (let j = 0; j < sol.N; j++) {
-      const q = E.beltSample(path, ctx.belt.sTooth0 + j * E.beltPitch + shift);
-      by.set(0, q.nu, q.nv); bz.set(0, -q.nv, q.nu);
-      m4.makeBasis(bx, by, bz);
-      p0.set(E.beltX, q.u + q.nu * E.beltIn, q.v + q.nv * E.beltIn);
-      m4.setPosition(p0);
-      teeth.setMatrixAt(j, m4);
+  function update(crankAngle) {
+    const beltShift = crankAngle * crankPulleyRadius;
+    for (let tooth = 0; tooth < solution.teethCount; tooth++) {
+      const point = Belt.pointAt(solution.path, firstToothDistance + tooth * spec.beltPitch + beltShift);
+      axisY.set(0, point.normalU, point.normalV);
+      axisZ.set(0, -point.normalV, point.normalU);
+      matrix.makeBasis(axisX, axisY, axisZ);
+      position.set(spec.beltX, point.u + point.normalU * spec.beltToothOffset, point.v + point.normalV * spec.beltToothOffset);
+      matrix.setPosition(position);
+      teeth.setMatrixAt(tooth, matrix);
     }
     teeth.instanceMatrix.needsUpdate = true;
-    spin.rotation.x = -theta * Rc / T.R;
-    pumpSpin.rotation.x = theta * Rc / Rp;
-  };
-  return out;
-};
+    tensioner.spinning.rotation.x = -crankAngle * crankPulleyRadius / spec.tensioner.rollerRadius;
+    pump.spinning.rotation.x = crankAngle * crankPulleyRadius / pump.radius;
+  }
 
-function convexHull(pts) {
-  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lo = [], hi = [];
-  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
-  for (let k = p.length - 1; k >= 0; k--) { const q = p[k]; while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], q) <= 0) hi.pop(); hi.push(q); }
-  hi.pop(); lo.pop();
-  return lo.concat(hi);
+  return { objects: [band, teeth, tensioner.assembly, tensioner.armMesh, pump.pump], cover, update };
 }
+
+window.EngineBuilders.i4.beltToothPhases = beltToothPhases;
+window.EngineBuilders.i4.timingBelt = timingBelt;
 })();

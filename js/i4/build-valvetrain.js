@@ -1,198 +1,262 @@
+/*
+ * Рядный двигатель: газораспределение DOHC 16V.
+ *
+ *   valvetrain(context, belt) → { camshafts, bearingCaps, portMesh, ports, instanced, fixed, lifts, update(crankAngle) }
+ *     camshafts  — впускной и выпускной распредвалы со шкивами ремня; вращаются с половиной скорости вала;
+ *     instanced  — 16 клапанов, толкателей, шайб, пружин и тарелок (InstancedMesh: одна геометрия на все копии);
+ *     ports      — средние линии впускных и выпускных каналов (по ним летят частицы газа);
+ *     lifts      — текущий подъём всех 16 клапанов: [впуск цил.1 перед, впуск цил.1 зад, …, выпуск …].
+ *
+ * Клапан, толкатель и пружина двигаются вдоль оси клапана на величину spec.valveLift — подъём,
+ * который даёт профиль кулачка.
+ */
 (function () {
 'use strict';
-window.BUILD_I4 = window.BUILD_I4 || {};
-const V3 = THREE.Vector3;
 
-BUILD_I4.valvetrain = function (ctx) {
-  const E = ctx.E, MM = ctx.M, M = MM.mat;
-  const out = { cams: [], ports: { in: [], ex: [] } };
+const Geometry = window.Geometry;
+const Vector3 = THREE.Vector3;
+const { INTAKE, EXHAUST } = window.EngineSpecs.i4;
+const CAM_JOURNAL_X = [-172, -86, 0, 86, 172];
 
-  const prof = E.lobeProfile(240);
-  const lobeShape = G.shapeFromPts(prof);
-  const camJournals = [-172, -86, 0, 86, 172];
-  for (const s of [-1, 1]) {
-    const cg = new THREE.Group();
-    cg.position.set(0, E.camY, s * E.camZ);
-    const core = [G.cylX(11, -205, 188, 28), G.cylX(10, -232, -205, 28)];
-    const polish = [];
-    camJournals.forEach((x, k) => polish.push(G.cylX(12.5, x - (k === 0 ? 14 : 10), x + 10, 36)));
-    polish.push(G.cylX(17, -159, -156, 36));
-    for (let i = 0; i < 4; i++) {
-      const a = E.lobeAngle(i, s);
-      for (const d of [-1, 1]) {
-        const x = E.cylX[i] + d * E.valveDX;
-        const geo = new THREE.ExtrudeGeometry(lobeShape, { depth: E.lobeW, bevelEnabled: false, curveSegments: 1 });
-        geo.rotateZ(a);
-        geo.translate(0, 0, x - E.lobeW / 2);
-        G.shapeToYZ(geo);
-        polish.push(geo);
-      }
+function camshaft(spec, materials, tag, side, toothPhase) {
+  const solid = materials.solid;
+  const group = new THREE.Group();
+  group.position.set(0, spec.camY, side * spec.camZ);
+
+  const core = [Geometry.cylinderAlongX(11, -205, 188, 28), Geometry.cylinderAlongX(10, -232, -205, 28)];
+  const polished = CAM_JOURNAL_X.map((x, journal) => Geometry.cylinderAlongX(12.5, x - (journal === 0 ? 14 : 10), x + 10, 36));
+  polished.push(Geometry.cylinderAlongX(17, -159, -156, 36));
+
+  const lobeShape = Geometry.polygonShape(spec.lobeProfile(240));
+  spec.cylinderX.forEach((cylinderX, cylinder) => {
+    const lobeAngle = spec.lobeAngle(cylinder, side);
+    for (const valve of [-1, 1]) {
+      const x = cylinderX + valve * spec.valveOffsetX;
+      const lobe = new THREE.ExtrudeGeometry(lobeShape, { depth: spec.lobeWidth, bevelEnabled: false, curveSegments: 1 });
+      lobe.rotateZ(lobeAngle);
+      lobe.translate(0, 0, x - spec.lobeWidth / 2);
+      Geometry.shapeToYZ(lobe);
+      polished.push(lobe);
     }
-    const shaft = new THREE.Mesh(G.merge(core), M.camshaft);
-    const lobes = new THREE.Mesh(G.merge(polish), M.camLobe);
-    [shaft, lobes].forEach(m => { ctx.tag(m, 'camshaft', 'valvetrain'); m.castShadow = m.receiveShadow = true; cg.add(m); });
+  });
 
-    const R = E.pd(E.z.cam) / 2;
-    const phase = ctx.belt.phase[s < 0 ? 'camIn' : 'camEx'];
-    const rim = G.timingPulleyShape(E.z.cam, R, { phase, holes: [G.circlePath(0, 0, R - 9, true)] });
-    const web = new THREE.Shape(); web.absarc(0, 0, R - 7, 0, Math.PI * 2, false);
-    web.holes.push(G.circlePath(0, 0, 10, true));
-    for (let k = 0; k < 5; k++) {
-      const a = k / 5 * Math.PI * 2 + 0.3;
-      web.holes.push(G.circlePath(31 * Math.cos(a), 31 * Math.sin(a), 10.5, true));
-    }
-    const pulley = new THREE.Mesh(G.merge([
-      G.extrudeX(rim, E.beltX - 13, E.beltX + 13, { curveSegments: 40 }),
-      G.extrudeX(web, E.beltX - 4, E.beltX + 4, { curveSegments: 28 }),
-      G.tubeX(10, 18, E.beltX - 10, E.beltX + 15, 40),
-    ]), M.camPulley);
-    ctx.tag(pulley, 'camPulley', 'timing');
-    pulley.castShadow = pulley.receiveShadow = true;
-    cg.add(pulley);
-    const boltGeo = G.merge([
-      (() => { const g = G.hexPrism(17, 8); G.toX(g); g.translate(E.beltX - 22, 0, 0); return g; })(),
-      G.tubeX(0, 15, E.beltX - 14, E.beltX - 10, 36),
-    ]);
-    const bolt = new THREE.Mesh(boltGeo, M.camBolt);
-    ctx.tag(bolt, 'camPulley', 'timing');
-    cg.add(bolt);
-    out.cams.push({ s, group: cg });
+  [new THREE.Mesh(Geometry.mergeGeometries(core), solid.camshaft), new THREE.Mesh(Geometry.mergeGeometries(polished), solid.camLobe)]
+    .forEach(mesh => {
+      tag(mesh, 'camshaft', 'valvetrain');
+      mesh.castShadow = mesh.receiveShadow = true;
+      group.add(mesh);
+    });
+
+  const radius = spec.pitchRadius(spec.teeth.cam);
+  const rim = Geometry.timingPulleyShape(spec.teeth.cam, radius, { phase: toothPhase, holes: [Geometry.circleHole(0, 0, radius - 9, true)] });
+  const web = new THREE.Shape();
+  web.absarc(0, 0, radius - 7, 0, Math.PI * 2, false);
+  web.holes.push(Geometry.circleHole(0, 0, 10, true));
+  for (let k = 0; k < 5; k++) {
+    const angle = k / 5 * Math.PI * 2 + 0.3;
+    web.holes.push(Geometry.circleHole(31 * Math.cos(angle), 31 * Math.sin(angle), 10.5, true));
   }
+  const beltX = spec.beltX;
+  const pulley = new THREE.Mesh(Geometry.mergeGeometries([
+    Geometry.extrudeAlongX(rim, beltX - 13, beltX + 13, { curveSegments: 40 }),
+    Geometry.extrudeAlongX(web, beltX - 4, beltX + 4, { curveSegments: 28 }),
+    Geometry.tubeAlongX(10, 18, beltX - 10, beltX + 15, 40),
+  ]), solid.camPulley);
+  tag(pulley, 'camPulley', 'timing');
+  pulley.castShadow = pulley.receiveShadow = true;
+  group.add(pulley);
 
-  const capGeos = [];
-  for (const s of [-1, 1]) {
-    camJournals.forEach((x, k) => {
-      const w = k === 0 ? 28 : 18;
-      const shp = new THREE.Shape();
-      shp.moveTo(0, -25); shp.lineTo(0, -12.6);
-      shp.absarc(0, 0, 12.6, -Math.PI / 2, Math.PI / 2, false);
-      shp.lineTo(0, 25); shp.lineTo(17, 25); shp.quadraticCurveTo(23, 25, 23, 19);
-      shp.lineTo(23, -19); shp.quadraticCurveTo(23, -25, 17, -25); shp.closePath();
-      const g = G.extrudeX(shp, x - w / 2 - (k === 0 ? 4 : 0), x + w / 2 - (k === 0 ? 4 : 0), { curveSegments: 14 });
-      g.translate(0, E.camY, s * E.camZ);
-      capGeos.push(g);
-      for (const dz of [-17, 17]) {
-        const b = G.hexPrism(10, 6); b.translate(x - (k === 0 ? 4 : 0), E.camY + 23, s * E.camZ + dz);
-        capGeos.push(b);
+  const boltHead = Geometry.hexPrism(17, 8);
+  Geometry.rotateToX(boltHead);
+  boltHead.translate(beltX - 22, 0, 0);
+  const bolt = new THREE.Mesh(Geometry.mergeGeometries([boltHead, Geometry.tubeAlongX(0, 15, beltX - 14, beltX - 10, 36)]), solid.camBolt);
+  tag(bolt, 'camPulley', 'timing');
+  group.add(bolt);
+  return group;
+}
+
+function bearingCaps(spec) {
+  const parts = [];
+  for (const side of [INTAKE, EXHAUST]) {
+    CAM_JOURNAL_X.forEach((x, journal) => {
+      const width = journal === 0 ? 28 : 18;
+      const shift = journal === 0 ? 4 : 0;
+      const outline = new THREE.Shape();
+      outline.moveTo(0, -25);
+      outline.lineTo(0, -12.6);
+      outline.absarc(0, 0, 12.6, -Math.PI / 2, Math.PI / 2, false);
+      outline.lineTo(0, 25);
+      outline.lineTo(17, 25);
+      outline.quadraticCurveTo(23, 25, 23, 19);
+      outline.lineTo(23, -19);
+      outline.quadraticCurveTo(23, -25, 17, -25);
+      outline.closePath();
+      const cap = Geometry.extrudeAlongX(outline, x - width / 2 - shift, x + width / 2 - shift, { curveSegments: 14 });
+      cap.translate(0, spec.camY, side * spec.camZ);
+      parts.push(cap);
+      for (const boltZ of [-17, 17]) {
+        const bolt = Geometry.hexPrism(10, 6);
+        bolt.translate(x - shift, spec.camY + 23, side * spec.camZ + boltZ);
+        parts.push(bolt);
       }
     });
   }
-  const caps = new THREE.Mesh(G.merge(capGeos), M.camCap);
-  ctx.tag(caps, 'head', 'housing');
+  return Geometry.mergeGeometries(parts);
+}
+
+function valveGeometry(spec, side) {
+  const headRadius = spec.valveHeadRadius[side], length = spec.valveLength, stem = spec.stemRadius;
+  const profile = [[0, 0], [headRadius, 0], [headRadius, 1.2], [headRadius - 2.4, 3.6]];
+  for (let k = 1; k <= 8; k++) {
+    const t = k / 8;
+    const radius = (headRadius - 2.4) + (stem - (headRadius - 2.4)) * (1 - Math.pow(1 - t, 2.2));
+    profile.push([radius, 3.6 + 13 * t]);
+  }
+  profile.push([stem, length - 7], [stem - 0.55, length - 6.4], [stem - 0.55, length - 5.4], [stem, length - 4.8],
+    [stem, length - 0.4], [stem - 0.4, length], [0, length]);
+  return Geometry.lathe(profile, 32);
+}
+
+function valveParts(spec) {
+  const { tappetRadius: R, tappetHeight: H } = spec;
+  const springHeight = spec.springTopDistance - spec.springSeatDistance;
+  return {
+    tappet: Geometry.lathe([[0, 0], [R - 0.7, 0], [R, -0.7], [R, -H], [R - 1.3, -H], [R - 1.3, -4.2], [0, -4.2]], 40, 0, undefined, true),
+    shim: Geometry.lathe([[0, 0.02], [12.2, 0.02], [12.2, 0.32], [0, 0.32]], 40, 0, undefined, true),
+    outerSpring: Geometry.coilSpring(11.4, 1.65, 5.2, springHeight, 1, 7),
+    innerSpring: Geometry.coilSpring(7.7, 1.2, 6.4, springHeight, -1, 6),
+    retainer: Geometry.lathe([[2.4, -4.2], [3.6, -4.2], [5.6, 0], [13.4, 0], [13.4, 1.4], [10.8, 2.0],
+      [6.6, 5.8], [3.3, 5.8], [2.4, -4.2]], 36, 0, undefined, true),
+    springSeat: Geometry.lathe([[5.6, -1.2], [13.6, -1.2], [13.6, 0], [5.6, 0], [5.6, -1.2]], 36, 0, undefined, true),
+    guide: Geometry.lathe([[spec.stemRadius + 0.05, 0], [5.4, 0], [5.4, 26], [spec.stemRadius + 0.05, 26]], 24, 0, undefined, true),
+    seal: Geometry.lathe([[3.0, 0], [6.4, 0], [6.4, 5], [4.2, 6.5], [3.0, 6.5], [3.0, 0]], 24, 0, undefined, true),
+  };
+}
+
+function portCurves(spec) {
+  const curves = { [INTAKE]: [], [EXHAUST]: [] };
+  const geometries = [];
+  for (const side of [INTAKE, EXHAUST]) {
+    const radius = side === INTAKE ? 11.5 : 10;
+    const axis = spec.valveAxis(side);
+    spec.cylinderX.forEach(x => {
+      const pair = [];
+      for (const valve of [-1, 1]) {
+        const throat = new Vector3(x + valve * spec.valveOffsetX, spec.valveSeatY + 4.5 * axis.y, side * spec.valveSeatZ + 4.5 * axis.z);
+        const curve = new THREE.CatmullRomCurve3([
+          new Vector3(x + valve * 5, spec.headFaceY + 34, side * 112),
+          new Vector3(x + valve * 7, spec.headFaceY + 33, side * 84),
+          new Vector3(x + valve * 12, spec.headFaceY + 30, side * 58),
+          new Vector3(x + valve * 17.5, spec.headFaceY + 24, side * 36),
+          throat,
+        ], false, 'centripetal');
+        pair.push(curve);
+        geometries.push(new THREE.TubeGeometry(curve, 36, radius, 14, false));
+      }
+      curves[side].push(pair);
+    });
+  }
+  return { curves, geometry: Geometry.mergeGeometries(geometries) };
+}
+
+function valvetrain({ spec, materials, tag }, belt) {
+  const solid = materials.solid;
+  const camshafts = [INTAKE, EXHAUST].map(side =>
+    camshaft(spec, materials, tag, side, belt.toothPhase[side === INTAKE ? 'camIntake' : 'camExhaust']));
+
+  const caps = new THREE.Mesh(bearingCaps(spec), solid.camCap);
+  tag(caps, 'head', 'housing');
   caps.castShadow = caps.receiveShadow = true;
-  out.caps = caps;
 
-  const valveGeo = s => {
-    const R = s < 0 ? E.valveHeadR.in : E.valveHeadR.ex, L = E.valveLen, st = E.stemR;
-    const pts = [[0, 0], [R, 0], [R, 1.2], [R - 2.4, 3.6]];
-    for (let k = 1; k <= 8; k++) {
-      const t = k / 8, a = (R - 2.4) + (st - (R - 2.4)) * (1 - Math.pow(1 - t, 2.2));
-      pts.push([a, 3.6 + 13 * t]);
-    }
-    pts.push([st, L - 7], [st - 0.55, L - 6.4], [st - 0.55, L - 5.4], [st, L - 4.8], [st, L - 0.4], [st - 0.4, L], [0, L]);
-    return G.lathe(pts, 32);
+  const shapes = valveParts(spec);
+  const instanced = (geometry, material, part, count) => {
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    tag(mesh, part, 'valvetrain');
+    mesh.castShadow = mesh.receiveShadow = true;
+    return mesh;
   };
-  const tappetGeo = G.lathe([[0, 0], [E.tappetR - 0.7, 0], [E.tappetR, -0.7], [E.tappetR, -E.tappetH],
-    [E.tappetR - 1.3, -E.tappetH], [E.tappetR - 1.3, -4.2], [0, -4.2]], 40, 0, undefined, true);
-  const shimGeo = G.lathe([[0, 0.02], [12.2, 0.02], [12.2, 0.32], [0, 0.32]], 40, 0, undefined, true);
-  const springH = E.springTop - E.springSeat;
-  const outerSpring = G.coilSpring(11.4, 1.65, 5.2, springH, 1, 7);
-  const innerSpring = G.coilSpring(7.7, 1.2, 6.4, springH, -1, 6);
-  const retainerGeo = G.lathe([[2.4, -4.2], [3.6, -4.2], [5.6, 0], [13.4, 0], [13.4, 1.4], [10.8, 2.0],
-    [6.6, 5.8], [3.3, 5.8], [2.4, -4.2]], 36, 0, undefined, true);
-  const seatGeo = G.lathe([[5.6, -1.2], [13.6, -1.2], [13.6, 0], [5.6, 0], [5.6, -1.2]], 36, 0, undefined, true);
-  const guideGeo = G.lathe([[E.stemR + 0.05, 0], [5.4, 0], [5.4, 26], [E.stemR + 0.05, 26]], 24, 0, undefined, true);
-  const sealGeo = G.lathe([[3.0, 0], [6.4, 0], [6.4, 5], [4.2, 6.5], [3.0, 6.5], [3.0, 0]], 24, 0, undefined, true);
-
-  const N = 8;
-  const mk = (geo, mat, part, count, layer) => {
-    const m = new THREE.InstancedMesh(geo, mat, count);
-    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    ctx.tag(m, part, layer || 'valvetrain');
-    m.castShadow = m.receiveShadow = true;
-    return m;
+  const valves = {
+    [INTAKE]: instanced(valveGeometry(spec, INTAKE), solid.valveIn, 'valveIn', 8),
+    [EXHAUST]: instanced(valveGeometry(spec, EXHAUST), solid.valveEx, 'valveEx', 8),
   };
-  const valves = { '-1': mk(valveGeo(-1), M.valveIn, 'valveIn', N), '1': mk(valveGeo(1), M.valveEx, 'valveEx', N) };
-  const tappets = mk(tappetGeo, M.tappet, 'tappet', 16);
-  const shims = mk(shimGeo, M.shim, 'tappet', 16);
-  const springsO = mk(outerSpring, M.spring, 'springs', 16);
-  const springsI = mk(innerSpring, M.spring, 'springs', 16);
-  const retainers = mk(retainerGeo, M.retainer, 'springs', 16);
-  const rubber = new THREE.MeshStandardMaterial({ color: MM.srgb('#17191c'), roughness: 0.65, metalness: 0 });
-  const staticParts = [];
-  const seatG = [], guideG = [], sealG = [];
+  const tappets = instanced(shapes.tappet, solid.tappet, 'tappet', 16);
+  const shims = instanced(shapes.shim, solid.shim, 'tappet', 16);
+  const outerSprings = instanced(shapes.outerSpring, solid.spring, 'springs', 16);
+  const innerSprings = instanced(shapes.innerSpring, solid.spring, 'springs', 16);
+  const retainers = instanced(shapes.retainer, solid.retainer, 'springs', 16);
+  const rubber = new THREE.MeshStandardMaterial({ color: materials.srgb('#17191c'), roughness: 0.65, metalness: 0 });
 
   const valveList = [];
-  for (const s of [-1, 1]) {
-    const ax = E.valveAxis(s), axis = new V3(0, ax.y, ax.z);
-    const q = new THREE.Quaternion().setFromAxisAngle(new V3(1, 0, 0), s * E.valveAngle);
-    for (let i = 0; i < 4; i++) for (const d of [-1, 1]) {
-      const seat = new V3(E.cylX[i] + d * E.valveDX, E.seatY, s * E.seatZ);
-      valveList.push({ s, i, d, seat, axis, q, idxSide: i * 2 + (d > 0 ? 1 : 0), idxAll: (s < 0 ? 0 : 8) + i * 2 + (d > 0 ? 1 : 0) });
-      const place = (geo, along) => {
-        const g2 = geo.clone(); G.applyQ(g2, q);
-        const p = seat.clone().addScaledVector(axis, along); g2.translate(p.x, p.y, p.z); return g2;
-      };
-      seatG.push(place(seatGeo, E.springSeat));
-      guideG.push(place(guideGeo, E.springSeat - 24));
-      sealG.push(place(sealGeo, E.springSeat + 0.2));
-    }
-  }
-  const seatsMesh = new THREE.Mesh(G.merge(seatG), M.retainer); ctx.tag(seatsMesh, 'springs', 'valvetrain');
-  const guidesMesh = new THREE.Mesh(G.merge(guideG), M.guide); ctx.tag(guidesMesh, 'head', 'valvetrain');
-  const sealsMesh = new THREE.Mesh(G.merge(sealG), rubber); ctx.tag(sealsMesh, 'head', 'valvetrain');
-  staticParts.push(seatsMesh, guidesMesh, sealsMesh);
-
-  const portGeos = [];
-  for (const s of [-1, 1]) {
-    const rad = s < 0 ? 11.5 : 10;
-    const ax = E.valveAxis(s);
-    for (let i = 0; i < 4; i++) {
-      const pair = [];
-      for (const d of [-1, 1]) {
-        const x = E.cylX[i];
-        const throat = new V3(x + d * E.valveDX, E.seatY + 4.5 * ax.y, s * E.seatZ + 4.5 * ax.z);
-        const pts = [
-          new V3(x + d * 5, E.headY + 34, s * 112),
-          new V3(x + d * 7, E.headY + 33, s * 84),
-          new V3(x + d * 12, E.headY + 30, s * 58),
-          new V3(x + d * 17.5, E.headY + 24, s * 36),
-          throat,
-        ];
-        const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-        pair.push(curve);
-        portGeos.push(new THREE.TubeGeometry(curve, 36, rad, 14, false));
+  const seats = [], guides = [], seals = [];
+  for (const side of [INTAKE, EXHAUST]) {
+    const axisDirection = spec.valveAxis(side);
+    const axis = new Vector3(0, axisDirection.y, axisDirection.z);
+    const tilt = new THREE.Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), side * spec.valveTilt);
+    spec.cylinderX.forEach((x, cylinder) => {
+      for (const valve of [-1, 1]) {
+        const seat = new Vector3(x + valve * spec.valveOffsetX, spec.valveSeatY, side * spec.valveSeatZ);
+        const indexOnSide = cylinder * 2 + (valve > 0 ? 1 : 0);
+        valveList.push({ side, cylinder, seat, axis, tilt, indexOnSide, index: (side === INTAKE ? 0 : 8) + indexOnSide });
+        const placed = (geometry, distanceAlongAxis) => {
+          const copy = geometry.clone();
+          Geometry.applyQuaternion(copy, tilt);
+          const point = seat.clone().addScaledVector(axis, distanceAlongAxis);
+          copy.translate(point.x, point.y, point.z);
+          return copy;
+        };
+        seats.push(placed(shapes.springSeat, spec.springSeatDistance));
+        guides.push(placed(shapes.guide, spec.springSeatDistance - 24));
+        seals.push(placed(shapes.seal, spec.springSeatDistance + 0.2));
       }
-      out.ports[s < 0 ? 'in' : 'ex'].push(pair);
-    }
+    });
   }
-  const ports = new THREE.Mesh(G.merge(portGeos), MM.ghost.ports);
-  ctx.tag(ports, 'head', 'housing');
-  ports.renderOrder = 2;
-  out.portMesh = ports;
+  const fixed = [
+    tag(new THREE.Mesh(Geometry.mergeGeometries(seats), solid.retainer), 'springs', 'valvetrain'),
+    tag(new THREE.Mesh(Geometry.mergeGeometries(guides), solid.guide), 'head', 'valvetrain'),
+    tag(new THREE.Mesh(Geometry.mergeGeometries(seals), rubber), 'head', 'valvetrain'),
+  ];
 
-  out.instanced = [valves['-1'], valves['1'], tappets, shims, springsO, springsI, retainers];
-  out.static = staticParts;
+  const ports = portCurves(spec);
+  const portMesh = new THREE.Mesh(ports.geometry, materials.ghost.ports);
+  tag(portMesh, 'head', 'housing');
+  portMesh.renderOrder = 2;
 
-  const m4 = new THREE.Matrix4(), pos = new V3(), scl = new V3(1, 1, 1), one = new V3(1, 1, 1);
-  out.lifts = new Float32Array(16);
-  out.update = function (theta) {
-    out.cams.forEach(c => { c.group.rotation.x = theta / 2; });
-    for (const v of valveList) {
-      const lift = E.valveLift(v.i, v.s, theta);
-      out.lifts[v.idxAll] = lift;
-      pos.copy(v.seat).addScaledVector(v.axis, -lift);
-      m4.compose(pos, v.q, one); valves[v.s].setMatrixAt(v.idxSide, m4);
-      pos.copy(v.seat).addScaledVector(v.axis, E.tappetTop - lift);
-      m4.compose(pos, v.q, one); tappets.setMatrixAt(v.idxAll, m4); shims.setMatrixAt(v.idxAll, m4);
-      pos.copy(v.seat).addScaledVector(v.axis, E.springSeat);
-      scl.set(1, (springH - lift) / springH, 1);
-      m4.compose(pos, v.q, scl); springsO.setMatrixAt(v.idxAll, m4); springsI.setMatrixAt(v.idxAll, m4);
-      pos.copy(v.seat).addScaledVector(v.axis, E.springTop - lift);
-      m4.compose(pos, v.q, one); retainers.setMatrixAt(v.idxAll, m4);
+  const moving = [valves[INTAKE], valves[EXHAUST], tappets, shims, outerSprings, innerSprings, retainers];
+  const springHeight = spec.springTopDistance - spec.springSeatDistance;
+  const matrix = new THREE.Matrix4(), position = new Vector3(), springScale = new Vector3(1, 1, 1), noScale = new Vector3(1, 1, 1);
+  const lifts = new Float32Array(16);
+
+  function update(crankAngle) {
+    camshafts.forEach(group => { group.rotation.x = crankAngle / 2; });
+    for (const valve of valveList) {
+      const lift = spec.valveLift(valve.cylinder, valve.side, crankAngle);
+      lifts[valve.index] = lift;
+      const placeAt = (distanceAlongAxis, scale) => {
+        position.copy(valve.seat).addScaledVector(valve.axis, distanceAlongAxis);
+        matrix.compose(position, valve.tilt, scale);
+      };
+      placeAt(-lift, noScale);
+      valves[valve.side].setMatrixAt(valve.indexOnSide, matrix);
+      placeAt(spec.tappetTopDistance - lift, noScale);
+      tappets.setMatrixAt(valve.index, matrix);
+      shims.setMatrixAt(valve.index, matrix);
+      springScale.set(1, (springHeight - lift) / springHeight, 1);
+      placeAt(spec.springSeatDistance, springScale);
+      outerSprings.setMatrixAt(valve.index, matrix);
+      innerSprings.setMatrixAt(valve.index, matrix);
+      placeAt(spec.springTopDistance - lift, noScale);
+      retainers.setMatrixAt(valve.index, matrix);
     }
-    out.instanced.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+    moving.forEach(mesh => { mesh.instanceMatrix.needsUpdate = true; });
+  }
+
+  return {
+    camshafts, bearingCaps: caps, portMesh, fixed, lifts, update,
+    instanced: moving,
+    ports: { intake: ports.curves[INTAKE], exhaust: ports.curves[EXHAUST] },
   };
-  return out;
-};
+}
+
+window.EngineBuilders.i4.valvetrain = valvetrain;
 })();
