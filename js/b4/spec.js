@@ -1,253 +1,277 @@
+/*
+ * Оппозитный четырёхцилиндровый двигатель («боксер»): размеры по четырём листам чертежа (мм) и кинематика.
+ * Ось X — вдоль вала; цилиндры лежат горизонтально: правый ряд (цилиндры 1, 3) смотрит в −Z, левый (2, 4) в +Z.
+ * Точки внутри ряда задаются координатами «вдоль оси цилиндра» (along) и «вбок» (side) — см. pointInBank.
+ *
+ *   pistonPosition(cylinder, crankAngle)  — шатунная шейка, расстояние до пальца, ход поршня, угол шатуна
+ *   cyclePhaseDeg(cylinder, crankDeg)     — угол рабочего цикла цилиндра
+ *
+ * Газораспределение SOHC с коромыслами. Задан закон угла коромысла φ(угол кулачка) = φmax(1 − u²)²;
+ * клапан опускается шаровой опорой регулировочного винта, а кулачок строится как огибающая площадки
+ * коромысла (lobeProfile), поэтому подъём клапана в точности следует из геометрии рычага:
+ *   rockerAngleLaw(side, camAngle), padLineAt(side, φ), adjusterBallAt(side, φ), valveLiftForRocker(side, φ)
+ *   valveLift(cylinder, side, crankAngle), liftAtCyclePhase(side, phaseDeg)
+ *
+ * Ремень ГРМ: восемь шкивов и роликов, solveBelt подбирает угол натяжителя под целое число зубьев (201).
+ */
 (function (root) {
 'use strict';
-const DEG = Math.PI / 180, TAU = Math.PI * 2;
-const mod = (a, m) => ((a % m) + m) % m;
-const wrapPi = a => mod(a + Math.PI, TAU) - Math.PI;
-const E = { id: 'b4', DEG, TAU, mod, wrapPi };
 
-E.bore = 83;  E.stroke = 83;  E.r = 41.5;  E.rodLen = 143.5;  E.compH = 32.5;
-E.pitch = 108;
-E.pinX = [-81, -27, 27, 81];
-E.mainX = [-108, -54, 0, 54, 108];
-E.mainD = 60;  E.mainW = 19;  E.pinD = 52;  E.pinW = 21;  E.webT = 7;
-E.rodW = 20;  E.rodBig = 55;
-E.pistonR = 41.3;  E.pistonH = 50;  E.pinOD = 23;  E.pinID = 14;
-E.deck = 218;  E.gasket = 1.2;  E.fireFace = E.deck + E.gasket;
+const isNode = typeof require === 'function';
+const { DEG, TAU, positiveModulo, wrapToPi, rotate2d } = isNode ? require('../shared/math.js') : root.EngineMath;
+const Belt = isNode ? require('../shared/belt.js') : root.Belt;
 
-E.blockX = [-136, 132];
-E.oilPumpX = [-150, -136];
-E.flywheelX = 160;
-E.headX = { R: [-149, 118], L: [-149, 158] };
-E.camJournals = { R: [-130, -27, 78], L: [-120, 27, 135] };
-E.camEnd = { R: 104, L: 150 };
-
-E.nCyl = 4;
-E.cyl = [];
-for (let c = 0; c < 4; c++) {
-  const right = c % 2 === 0;
-  E.cyl.push({ n: c + 1, k: c, bank: right ? 'R' : 'L', beta: (right ? -90 : 90) * DEG, x: E.pinX[c], sgn: right ? 1 : -1 });
-}
-E.axisOf = c => ({ y: Math.cos(E.cyl[c].beta), z: Math.sin(E.cyl[c].beta) });
-E.vSideOf = c => { const b = E.cyl[c].beta, s = E.cyl[c].sgn; return { y: -Math.sin(b) * s, z: Math.cos(b) * s }; };
-E.bankPoint = function (c, x, a, s) {
-  const A = E.axisOf(c), N = E.vSideOf(c);
-  return [x, a * A.y + s * N.y, a * A.z + s * N.z];
+const spec = {
+  id: 'b4',
+  bore: 83,
+  stroke: 83,
+  crankRadius: 41.5,
+  rodLength: 143.5,
+  compressionHeight: 32.5,
+  compressionRatio: 10,
+  cylinderPitch: 108,
+  crankpinX: [-81, -27, 27, 81],
+  mainJournalX: [-108, -54, 0, 54, 108],
+  mainJournalDiameter: 60,
+  mainJournalWidth: 19,
+  crankpinDiameter: 52,
+  crankpinWidth: 21,
+  webThickness: 7,
+  rodWidth: 20,
+  rodBigEndBore: 55,
+  pistonRadius: 41.3,
+  pistonHeight: 50,
+  pinOuterDiameter: 23,
+  pinInnerDiameter: 14,
+  deckDistance: 218,
+  gasketThickness: 1.2,
+  blockSpanX: [-136, 132],
+  oilPumpSpanX: [-150, -136],
+  flywheelX: 160,
+  headSpanX: { right: [-149, 118], left: [-149, 158] },
+  camJournalX: { right: [-130, -27, 78], left: [-120, 27, 135] },
+  camEndX: { right: 104, left: 150 },
+  crankpinAngle: [-90, 90, 90, -90].map(degrees => degrees * DEG),
+  firingOrder: [1, 3, 2, 4],
 };
-E.pinAngle = [-90, 90, 90, -90].map(d => d * DEG);
+spec.combustionFace = spec.deckDistance + spec.gasketThickness;
+spec.displacementCm3 = Math.PI * spec.bore ** 2 / 4 * spec.stroke * 4 / 1000;
 
-E.kin = function (c, theta) {
-  const C = E.cyl[c], alpha = E.pinAngle[c] + theta, psi = alpha - C.beta;
-  const sp = Math.sin(psi), cp = Math.cos(psi);
-  const d = E.r * cp + Math.sqrt(E.rodLen * E.rodLen - E.r * E.r * sp * sp);
+spec.cylinders = [0, 1, 2, 3].map(index => {
+  const right = index % 2 === 0;
   return {
-    psi, alpha, d,
-    pinY: E.r * Math.cos(alpha), pinZ: E.r * Math.sin(alpha),
-    crown: d + E.compH,
-    travel: E.r + E.rodLen - d,
-    rodRot: C.beta + Math.atan2(-E.r * sp, d - E.r * cp),
+    number: index + 1, index,
+    bank: right ? 'right' : 'left',
+    axisAngle: (right ? -90 : 90) * DEG,
+    x: spec.crankpinX[index],
+    sign: right ? 1 : -1,
+  };
+});
+
+spec.cylinderAxis = cylinder => {
+  const angle = spec.cylinders[cylinder].axisAngle;
+  return { y: Math.cos(angle), z: Math.sin(angle) };
+};
+
+spec.bankSideAxis = cylinder => {
+  const { axisAngle, sign } = spec.cylinders[cylinder];
+  return { y: -Math.sin(axisAngle) * sign, z: Math.cos(axisAngle) * sign };
+};
+
+spec.pointInBank = function (cylinder, x, along, side) {
+  const axis = spec.cylinderAxis(cylinder), sideways = spec.bankSideAxis(cylinder);
+  return [x, along * axis.y + side * sideways.y, along * axis.z + side * sideways.z];
+};
+
+spec.pistonPosition = function (cylinder, crankAngle) {
+  const { axisAngle } = spec.cylinders[cylinder];
+  const throwAngle = spec.crankpinAngle[cylinder] + crankAngle;
+  const fromAxis = throwAngle - axisAngle;
+  const sinFromAxis = Math.sin(fromAxis), cosFromAxis = Math.cos(fromAxis);
+  const r = spec.crankRadius, L = spec.rodLength;
+  const pinDistance = r * cosFromAxis + Math.sqrt(L * L - r * r * sinFromAxis * sinFromAxis);
+  return {
+    crankAngleFromAxis: fromAxis, throwAngle, pinDistance,
+    crankpinY: r * Math.cos(throwAngle),
+    crankpinZ: r * Math.sin(throwAngle),
+    crownDistance: pinDistance + spec.compressionHeight,
+    travel: r + L - pinDistance,
+    rodAngle: axisAngle + Math.atan2(-r * sinFromAxis, pinDistance - r * cosFromAxis),
   };
 };
 
-E.firing = [1, 3, 2, 4];
-E.cycleOff = [0, 0, 0, 0];
-E.firing.forEach((n, k) => { E.cycleOff[n - 1] = mod(360 - 180 * k, 720); });
-E.phaseOf = (c, thetaDeg) => mod(thetaDeg + E.cycleOff[c], 720);
-
-E.ridgeH = 13.5;  E.ridgeA = E.fireFace + E.ridgeH;
-E.camA = 316;  E.camS = 0;
-E.kappa = 0.5;
-E.camBase = 18;  E.camJournalR = 13.5;  E.lobeW = 12;
-E.camBeta = 76 * DEG;
-E.peak = { in: 108, ex: 612 };
-E.spark = 350;
-E.vt = {
-  in: { sg: 1, angle: 22 * DEG, seatS: 17, dx: 18, headR: 16.5, len: 116, shaft: { a: 347, s: 22.5 }, gamma: -8 * DEG,
-        phiMax: 13.4 * DEG, lobeX: 27 },
-  ex: { sg: -1, angle: 17 * DEG, seatS: -16, dx: 18, headR: 14, len: 116, shaft: { a: 347, s: -22.5 }, gamma: -4 * DEG,
-        phiMax: 16.9 * DEG, lobeX: 10 },
-};
-E.stemR = 3;  E.screwR = 4;  E.rockerShaftR = 8;
-E.springSeatT = 62;  E.springTopT = 106;
-E.pocketDepth = 2.6;
-E.plugTip = [E.ridgeA - 2.2, 0];  E.plugAngle = 24 * DEG;
-
-const rot2 = (v, f) => [v[0] * Math.cos(f) - v[1] * Math.sin(f), v[0] * Math.sin(f) + v[1] * Math.cos(f)];
-['in', 'ex'].forEach(side => {
-  const V = E.vt[side];
-  V.u = [Math.cos(V.angle), V.sg * Math.sin(V.angle)];
-  V.seat = [E.ridgeA - Math.abs(V.seatS) * Math.tan(V.angle), V.seatS];
-  V.tip = [V.seat[0] + V.len * V.u[0], V.seat[1] + V.len * V.u[1]];
-  V.ball = [V.tip[0] + E.screwR * V.u[0], V.tip[1] + E.screwR * V.u[1]];
-  V.n0 = [Math.cos(V.gamma), Math.sin(V.gamma)];
-  V.C0 = [E.camA + E.camBase * V.n0[0], E.camS + E.camBase * V.n0[1]];
+spec.cycleOffsetDeg = [0, 0, 0, 0];
+spec.firingOrder.forEach((cylinderNumber, position) => {
+  spec.cycleOffsetDeg[cylinderNumber - 1] = positiveModulo(360 - 180 * position, 720);
 });
-E.rockerLaw = function (side, rel) {
-  const u = wrapPi(rel) / E.camBeta;
+spec.cyclePhaseDeg = (cylinder, crankDeg) => positiveModulo(crankDeg + spec.cycleOffsetDeg[cylinder], 720);
+
+Object.assign(spec, {
+  roofRidgeHeight: 13.5,
+  camAlong: 316,
+  camSide: 0,
+  camSpeedRatio: 0.5,
+  camBaseRadius: 18,
+  camJournalRadius: 13.5,
+  lobeWidth: 12,
+  camHalfWidth: 76 * DEG,
+  peakDeg: { intake: 108, exhaust: 612 },
+  stemRadius: 3,
+  adjusterBallRadius: 4,
+  rockerShaftRadius: 8,
+  springSeatDistance: 62,
+  springTopDistance: 106,
+  pocketDepth: 2.6,
+  sparkPlugAngle: 24 * DEG,
+  valves: {
+    intake: { rockerSign: 1, tilt: 22 * DEG, seatSide: 17, offsetX: 18, headRadius: 16.5, length: 116,
+      rockerShaft: { along: 347, side: 22.5 }, padNormalAngle: -8 * DEG, maxRockerAngle: 13.4 * DEG, lobeOffsetX: 27 },
+    exhaust: { rockerSign: -1, tilt: 17 * DEG, seatSide: -16, offsetX: 18, headRadius: 14, length: 116,
+      rockerShaft: { along: 347, side: -22.5 }, padNormalAngle: -4 * DEG, maxRockerAngle: 16.9 * DEG, lobeOffsetX: 10 },
+  },
+});
+spec.roofRidgeDistance = spec.combustionFace + spec.roofRidgeHeight;
+spec.sparkPlugTip = [spec.roofRidgeDistance - 2.2, 0];
+
+['intake', 'exhaust'].forEach(side => {
+  const valve = spec.valves[side];
+  valve.axis = [Math.cos(valve.tilt), valve.rockerSign * Math.sin(valve.tilt)];
+  valve.seat = [spec.roofRidgeDistance - Math.abs(valve.seatSide) * Math.tan(valve.tilt), valve.seatSide];
+  valve.tip = [valve.seat[0] + valve.length * valve.axis[0], valve.seat[1] + valve.length * valve.axis[1]];
+  valve.ball = [valve.tip[0] + spec.adjusterBallRadius * valve.axis[0], valve.tip[1] + spec.adjusterBallRadius * valve.axis[1]];
+  valve.padNormal = [Math.cos(valve.padNormalAngle), Math.sin(valve.padNormalAngle)];
+  valve.padCenter = [spec.camAlong + spec.camBaseRadius * valve.padNormal[0], spec.camSide + spec.camBaseRadius * valve.padNormal[1]];
+});
+
+spec.rockerAngleLaw = function (side, camAngle) {
+  const u = wrapToPi(camAngle) / spec.camHalfWidth;
   if (Math.abs(u) >= 1) return 0;
   const w = 1 - u * u;
-  return E.vt[side].phiMax * w * w;
+  return spec.valves[side].maxRockerAngle * w * w;
 };
-E.rockerLawD = function (side, rel) {
-  const u = wrapPi(rel) / E.camBeta;
-  if (Math.abs(u) >= 1) return 0;
-  return -4 * E.vt[side].phiMax * u * (1 - u * u) / E.camBeta;
-};
-E.padLine = function (side, phi) {
-  const V = E.vt[side], P = [V.shaft.a, V.shaft.s], f = V.sg * phi;
-  const n = rot2(V.n0, f), C = rot2([V.C0[0] - P[0], V.C0[1] - P[1]], f);
-  const Cx = P[0] + C[0], Cy = P[1] + C[1];
-  return { n, C: [Cx, Cy], h: n[0] * (Cx - E.camA) + n[1] * (Cy - E.camS) };
-};
-E.ballAt = function (side, phi) {
-  const V = E.vt[side], P = [V.shaft.a, V.shaft.s], b = rot2([V.ball[0] - P[0], V.ball[1] - P[1]], V.sg * phi);
-  return [P[0] + b[0], P[1] + b[1]];
-};
-E.liftOfPhi = function (side, phi) {
-  const V = E.vt[side], B = E.ballAt(side, phi);
-  return -((B[0] - V.ball[0]) * V.u[0] + (B[1] - V.ball[1]) * V.u[1]);
-};
-E.lobeProfile = function (side, n) {
-  n = n || 360;
-  const V = E.vt[side], pts = [];
-  for (let k = 0; k < n; k++) {
-    const T = -Math.PI + TAU * k / n, phi = E.rockerLaw(side, T), dphi = E.rockerLawD(side, T);
-    const psi = V.gamma + V.sg * phi - T, dpsi = V.sg * dphi - 1;
-    const h = E.padLine(side, phi).h, eps = 1e-6;
-    const dhdphi = (E.padLine(side, phi + eps).h - E.padLine(side, phi - eps).h) / (2 * eps);
-    const hp = dhdphi * dphi / dpsi;
-    pts.push([h * Math.cos(psi) - hp * Math.sin(psi), h * Math.sin(psi) + hp * Math.cos(psi)]);
-  }
-  return pts;
-};
-E.thetaPeak = (c, side) => mod(E.peak[side] - E.cycleOff[c], 720) * DEG;
-E.camRel = (c, side, theta) => E.kappa * (theta - E.thetaPeak(c, side));
-E.phiAt = (c, side, theta) => E.rockerLaw(side, E.camRel(c, side, theta));
-const LIFT_N = 600, liftTab = { in: [], ex: [] };
-['in', 'ex'].forEach(side => { for (let k = 0; k <= LIFT_N; k++) liftTab[side].push(E.liftOfPhi(side, E.vt[side].phiMax * k / LIFT_N)); });
-E.valveLiftOfPhi = function (side, phi) {
-  const x = Math.max(0, Math.min(1, phi / E.vt[side].phiMax)) * LIFT_N, k = Math.min(LIFT_N - 1, Math.floor(x)), f = x - k;
-  return liftTab[side][k] + (liftTab[side][k + 1] - liftTab[side][k]) * f;
-};
-E.valveLiftMax = { in: liftTab.in[LIFT_N], ex: liftTab.ex[LIFT_N] };
-E.valveLiftAt = (c, side, theta) => E.valveLiftOfPhi(side, E.phiAt(c, side, theta));
-E.valveLiftAtPhase = (side, phaseDeg) => E.valveLiftOfPhi(side, E.rockerLaw(side, (phaseDeg - E.peak[side]) * DEG * E.kappa));
-E.valveLocalX = (side, j) => (j ? 1 : -1) * E.vt[side].dx;
-E.lobeLocalX = (side, j) => (j ? 1 : -1) * E.vt[side].lobeX;
 
-E.beltX = -165;  E.beltW = 24;  E.beltPitch = 9.525;
-E.beltBack = 2.0;  E.beltIn = 0.8;  E.toothH = 3.6;
-E.z = { crank: 22, cam: 44, pump: 24 };
-E.pd = z => z * E.beltPitch / Math.PI;
-E.idlerR = 34.5;  E.tensR = 38.5;
-E.tensioner = { pivot: { u: 40.3, v: 39.8 }, arm: 53.6, prefer: 132 * DEG };
-E.pulleys = function (gamma) {
-  const t = E.tensioner, Rc = E.pd(E.z.crank) / 2, Rk = E.pd(E.z.cam) / 2;
+spec.rockerAngleSlope = function (side, camAngle) {
+  const u = wrapToPi(camAngle) / spec.camHalfWidth;
+  if (Math.abs(u) >= 1) return 0;
+  return -4 * spec.valves[side].maxRockerAngle * u * (1 - u * u) / spec.camHalfWidth;
+};
+
+spec.padLineAt = function (side, rockerAngle) {
+  const valve = spec.valves[side];
+  const pivot = [valve.rockerShaft.along, valve.rockerShaft.side];
+  const turn = valve.rockerSign * rockerAngle;
+  const normal = rotate2d(valve.padNormal, turn);
+  const offset = rotate2d([valve.padCenter[0] - pivot[0], valve.padCenter[1] - pivot[1]], turn);
+  const center = [pivot[0] + offset[0], pivot[1] + offset[1]];
+  return { normal, center, distance: normal[0] * (center[0] - spec.camAlong) + normal[1] * (center[1] - spec.camSide) };
+};
+
+spec.adjusterBallAt = function (side, rockerAngle) {
+  const valve = spec.valves[side];
+  const pivot = [valve.rockerShaft.along, valve.rockerShaft.side];
+  const offset = rotate2d([valve.ball[0] - pivot[0], valve.ball[1] - pivot[1]], valve.rockerSign * rockerAngle);
+  return [pivot[0] + offset[0], pivot[1] + offset[1]];
+};
+
+spec.valveLiftForRocker = function (side, rockerAngle) {
+  const valve = spec.valves[side];
+  const ball = spec.adjusterBallAt(side, rockerAngle);
+  return -((ball[0] - valve.ball[0]) * valve.axis[0] + (ball[1] - valve.ball[1]) * valve.axis[1]);
+};
+
+spec.lobeProfile = function (side, pointCount) {
+  const count = pointCount || 360;
+  const valve = spec.valves[side];
+  const points = [];
+  for (let k = 0; k < count; k++) {
+    const camAngle = -Math.PI + TAU * k / count;
+    const rocker = spec.rockerAngleLaw(side, camAngle);
+    const rockerSlope = spec.rockerAngleSlope(side, camAngle);
+    const normalAngle = valve.padNormalAngle + valve.rockerSign * rocker - camAngle;
+    const normalAngleSlope = valve.rockerSign * rockerSlope - 1;
+    const distance = spec.padLineAt(side, rocker).distance;
+    const epsilon = 1e-6;
+    const distancePerRocker = (spec.padLineAt(side, rocker + epsilon).distance - spec.padLineAt(side, rocker - epsilon).distance) / (2 * epsilon);
+    const tangentShift = distancePerRocker * rockerSlope / normalAngleSlope;
+    points.push([
+      distance * Math.cos(normalAngle) - tangentShift * Math.sin(normalAngle),
+      distance * Math.sin(normalAngle) + tangentShift * Math.cos(normalAngle),
+    ]);
+  }
+  return points;
+};
+
+spec.crankAngleAtPeak = (cylinder, side) => positiveModulo(spec.peakDeg[side] - spec.cycleOffsetDeg[cylinder], 720) * DEG;
+spec.camAngleFromPeak = (cylinder, side, crankAngle) => spec.camSpeedRatio * (crankAngle - spec.crankAngleAtPeak(cylinder, side));
+spec.rockerAngleAt = (cylinder, side, crankAngle) => spec.rockerAngleLaw(side, spec.camAngleFromPeak(cylinder, side, crankAngle));
+
+const LIFT_TABLE_STEPS = 600;
+const liftTable = { intake: [], exhaust: [] };
+['intake', 'exhaust'].forEach(side => {
+  for (let k = 0; k <= LIFT_TABLE_STEPS; k++) {
+    liftTable[side].push(spec.valveLiftForRocker(side, spec.valves[side].maxRockerAngle * k / LIFT_TABLE_STEPS));
+  }
+});
+
+spec.valveLiftFromRockerAngle = function (side, rockerAngle) {
+  const position = Math.max(0, Math.min(1, rockerAngle / spec.valves[side].maxRockerAngle)) * LIFT_TABLE_STEPS;
+  const index = Math.min(LIFT_TABLE_STEPS - 1, Math.floor(position));
+  const fraction = position - index;
+  return liftTable[side][index] + (liftTable[side][index + 1] - liftTable[side][index]) * fraction;
+};
+spec.maxValveLift = { intake: liftTable.intake[LIFT_TABLE_STEPS], exhaust: liftTable.exhaust[LIFT_TABLE_STEPS] };
+spec.valveLift = (cylinder, side, crankAngle) => spec.valveLiftFromRockerAngle(side, spec.rockerAngleAt(cylinder, side, crankAngle));
+spec.liftAtCyclePhase = (side, phaseDeg) =>
+  spec.valveLiftFromRockerAngle(side, spec.rockerAngleLaw(side, (phaseDeg - spec.peakDeg[side]) * DEG * spec.camSpeedRatio));
+spec.valveOffsetAlongX = (side, rear) => (rear ? 1 : -1) * spec.valves[side].offsetX;
+spec.lobeOffsetAlongX = (side, rear) => (rear ? 1 : -1) * spec.valves[side].lobeOffsetX;
+
+Object.assign(spec, {
+  beltX: -165,
+  beltWidth: 24,
+  beltPitch: 9.525,
+  beltBackThickness: 2.0,
+  beltToothOffset: 0.8,
+  beltToothHeight: 3.6,
+  teeth: { crank: 22, cam: 44, pump: 24 },
+  idlerRadius: 34.5,
+  tensionerRadius: 38.5,
+  tensioner: { pivot: { u: 40.3, v: 39.8 }, armLength: 53.6, preferredAngle: 132 * DEG },
+});
+
+spec.pitchRadius = teeth => teeth * spec.beltPitch / Math.PI / 2;
+
+spec.pulleys = function (tensionerAngle) {
+  const { pivot, armLength } = spec.tensioner;
+  const camRadius = spec.pitchRadius(spec.teeth.cam);
   return [
-    { key: 'camR', u: 0, v: -E.camA, R: Rk, side: 1 },
-    { key: 'idler1', u: -25.4, v: -78.5, R: E.idlerR, side: -1 },
-    { key: 'crank', u: 0, v: 0, R: Rc, side: 1 },
-    { key: 'tens', u: t.pivot.u + t.arm * Math.cos(gamma), v: t.pivot.v + t.arm * Math.sin(gamma), R: E.tensR, side: -1 },
-    { key: 'camL', u: 0, v: E.camA, R: Rk, side: 1 },
-    { key: 'idler3', u: -58.8, v: 162.0, R: E.idlerR, side: -1 },
-    { key: 'pump', u: -91.8, v: 94.1, R: E.pd(E.z.pump) / 2, side: 1 },
-    { key: 'idler2', u: -112.7, v: -89.9, R: E.idlerR, side: -1 },
+    { name: 'camRight', u: 0, v: -spec.camAlong, radius: camRadius, side: 1 },
+    { name: 'idler1', u: -25.4, v: -78.5, radius: spec.idlerRadius, side: -1 },
+    { name: 'crank', u: 0, v: 0, radius: spec.pitchRadius(spec.teeth.crank), side: 1 },
+    { name: 'tensioner', u: pivot.u + armLength * Math.cos(tensionerAngle), v: pivot.v + armLength * Math.sin(tensionerAngle),
+      radius: spec.tensionerRadius, side: -1 },
+    { name: 'camLeft', u: 0, v: spec.camAlong, radius: camRadius, side: 1 },
+    { name: 'idler3', u: -58.8, v: 162.0, radius: spec.idlerRadius, side: -1 },
+    { name: 'pump', u: -91.8, v: 94.1, radius: spec.pitchRadius(spec.teeth.pump), side: 1 },
+    { name: 'idler2', u: -112.7, v: -89.9, radius: spec.idlerRadius, side: -1 },
   ];
 };
-E.beltPath = function (P) {
-  const n = P.length, tan = [];
-  for (let k = 0; k < n; k++) {
-    const a = P[k], b = P[(k + 1) % n];
-    const r1 = a.side * a.R, r2 = b.side * b.R;
-    const du = b.u - a.u, dv = b.v - a.v, dist = Math.hypot(du, dv), c = (r1 - r2) / dist;
-    if (Math.abs(c) >= 1) return null;
-    const al = Math.atan2(dv, du) - Math.acos(c), nu = Math.cos(al), nv = Math.sin(al);
-    const p1 = { u: a.u + r1 * nu, v: a.v + r1 * nv }, p2 = { u: b.u + r2 * nu, v: b.v + r2 * nv };
-    const len = Math.hypot(p2.u - p1.u, p2.v - p1.v);
-    tan.push({ p1, p2, len, du: (p2.u - p1.u) / len, dv: (p2.v - p1.v) / len,
-      a1: Math.atan2(a.side * nv, a.side * nu), a2: Math.atan2(b.side * nv, b.side * nu) });
-  }
-  const pieces = []; let total = 0;
-  for (let k = 0; k < n; k++) {
-    const p = P[k], tin = tan[(k - 1 + n) % n], tout = tan[k];
-    const wrap = p.side > 0 ? mod(tout.a1 - tin.a2, TAU) : mod(tin.a2 - tout.a1, TAU);
-    if (p.side < 0 && wrap > Math.PI * 0.75) return null;
-    if (p.side > 0 && wrap < 2 * DEG) return null;
-    pieces.push({ type: 'arc', k, pulley: p, a0: tin.a2, dir: p.side, wrap, len: p.R * wrap, s0: total });
-    total += p.R * wrap;
-    pieces.push({ type: 'seg', k, p1: tout.p1, du: tout.du, dv: tout.dv, len: tout.len, s0: total });
-    total += tout.len;
-  }
-  return { pieces, length: total };
-};
-E.beltSample = function (path, s) {
-  s = mod(s, path.length);
-  let lo = 0, hi = path.pieces.length - 1;
-  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (path.pieces[m].s0 <= s) lo = m; else hi = m - 1; }
-  const pc = path.pieces[lo], ls = s - pc.s0;
-  let u, v, tu, tv;
-  if (pc.type === 'seg') { u = pc.p1.u + pc.du * ls; v = pc.p1.v + pc.dv * ls; tu = pc.du; tv = pc.dv; }
-  else { const p = pc.pulley, a = pc.a0 + pc.dir * ls / p.R; u = p.u + p.R * Math.cos(a); v = p.v + p.R * Math.sin(a); tu = -Math.sin(a) * pc.dir; tv = Math.cos(a) * pc.dir; }
-  return { u, v, tu, tv, nu: -tv, nv: tu, piece: pc };
-};
-E.solveBelt = function () {
-  const p = E.beltPitch, t = E.tensioner;
-  const lenAt = g => { const path = E.beltPath(E.pulleys(g)); return path ? path.length : NaN; };
-  const N = Math.round(lenAt(t.prefer) / p), want = N * p;
-  let prev = null, best = null;
-  for (let gd = 60; gd <= 220; gd += 0.25) {
-    const g = gd * DEG, L = lenAt(g);
-    if (prev && isFinite(L) && isFinite(prev.L) && (prev.L - want) * (L - want) <= 0) {
-      let ga = prev.g, gb = g, La = prev.L;
-      for (let it = 0; it < 60; it++) {
-        const gm = (ga + gb) / 2, Lm = lenAt(gm);
-        if ((La - want) * (Lm - want) <= 0) gb = gm; else { ga = gm; La = Lm; }
-      }
-      const gamma = (ga + gb) / 2, miss = Math.abs(wrapPi(gamma - t.prefer));
-      if (!best || miss < best.miss) best = { gamma, miss };
-    }
-    prev = { g, L };
-  }
-  if (!best) throw new Error('belt: no tensioner angle gives a whole number of teeth');
-  const pulleys = E.pulleys(best.gamma);
-  return { gamma: best.gamma, N, path: E.beltPath(pulleys), pulleys };
+
+spec.solveBelt = function () {
+  const lengthAt = angle => {
+    const path = Belt.layout(spec.pulleys(angle));
+    return path ? path.length : NaN;
+  };
+  const teethCount = Math.round(lengthAt(spec.tensioner.preferredAngle) / spec.beltPitch);
+  const tensionerAngle = Belt.findTensionerAngle({
+    lengthAt, wantedLength: teethCount * spec.beltPitch, fromDeg: 60, toDeg: 220, stepDeg: 0.25,
+    preferredAngle: spec.tensioner.preferredAngle,
+  });
+  if (tensionerAngle === null) throw new Error('ремень: ни при каком угле натяжителя не получается целое число зубьев');
+  const pulleys = spec.pulleys(tensionerAngle);
+  return { tensionerAngle, teethCount, pulleys, path: Belt.layout(pulleys) };
 };
 
-const Bm = E.bore / 1000, Sm = E.stroke / 1000, Lm = E.rodLen / 1000, rm = Sm / 2;
-E.CR = 10;
-E.Ap = Math.PI * Bm * Bm / 4;
-E.Vd = E.Ap * Sm;
-E.Vc = E.Vd / (E.CR - 1);
-E.Vbdc = E.Vc + E.Vd;
-E.displacementCC = E.Vd * 4 * 1e6;
-E.gas = { n: 1.30, Pin: 94000, Tin: 320, Pex: 106000, T3: 2300 };
-const g = E.gas;
-const T2 = g.Tin * Math.pow(E.CR, g.n - 1), P2 = g.Pin * Math.pow(E.CR, g.n), P3 = P2 * (g.T3 / T2);
-const T4 = g.T3 * Math.pow(1 / E.CR, g.n - 1);
-E.P3 = P3;
-E.volumeAt = psiDeg => {
-  const psi = psiDeg * DEG;
-  const x = rm * (1 - Math.cos(psi)) + (Lm - Math.sqrt(Lm * Lm - rm * rm * Math.sin(psi) ** 2));
-  return E.Vc + E.Ap * x;
-};
-E.thermo = function (phaseDeg) {
-  const phase = mod(phaseDeg, 720), psi = phase % 360, V = E.volumeAt(psi);
-  let P, T, stroke;
-  if (phase < 180) { stroke = 'intake'; P = g.Pin; T = g.Tin; }
-  else if (phase < 360) { stroke = 'compression'; const k = E.Vbdc / V; P = g.Pin * Math.pow(k, g.n); T = g.Tin * Math.pow(k, g.n - 1); }
-  else if (phase < 540) { stroke = 'power'; const k = E.Vc / V; P = P3 * Math.pow(k, g.n); T = g.T3 * Math.pow(k, g.n - 1); }
-  else { stroke = 'exhaust'; const f = (phase - 540) / 180; P = g.Pex; T = T4 * (1 - f) + g.Tin * f; }
-  return { phase, psi, V, P, T, stroke };
-};
-E.cycle = [];
-for (let ph = 0; ph <= 720; ph += 2) E.cycle.push(E.thermo(ph));
-let W = 0;
-for (let k = 0; k < E.cycle.length - 1; k++) W += 0.5 * (E.cycle[k].P + E.cycle[k + 1].P) * (E.cycle[k + 1].V - E.cycle[k].V);
-E.workPerCycle = Math.abs(W);
-E.imep = E.workPerCycle / E.Vd;
-E.power = rpm => E.workPerCycle * 4 * rpm / 120;
-E.torque = rpm => rpm > 0 ? E.power(rpm) / (2 * Math.PI * rpm / 60) : 0;
-E.strokeName = { intake: 'Впуск', compression: 'Сжатие', power: 'Рабочий ход', exhaust: 'Выпуск' };
-
-if (typeof module !== 'undefined' && module.exports) module.exports = E;
-root.ENG_B4 = E;
+if (typeof module !== 'undefined' && module.exports) module.exports = spec;
+root.EngineSpecs = Object.assign(root.EngineSpecs || {}, { b4: spec });
 })(typeof window !== 'undefined' ? window : globalThis);

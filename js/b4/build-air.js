@@ -1,86 +1,138 @@
+/*
+ * Оппозитный двигатель: впуск, топливо и выпуск.
+ *
+ *   airAndFuel(context) → { objects, flows }
+ *     ресивер над двигателем с дроссельной заслонкой, четыре впускных патрубка к головкам;
+ *     форсунки в патрубках и топливная рампа на каждом ряду, соединённые трубкой;
+ *     выпускные трубы под двигателем, сходящиеся в два коллектора.
+ *     flows — средние линии потоков для частиц газа: intake[цилиндр], exhaust[цилиндр], throttle.
+ *
+ * Точки патрубков у головки задаются в координатах ряда (spec.pointInBank), остальные — в координатах двигателя.
+ */
 (function () {
 'use strict';
-window.BUILD_B4 = window.BUILD_B4 || {};
-const V3 = THREE.Vector3;
 
-BUILD_B4.air = function (ctx) {
-  const E = ctx.E, MM = ctx.M, M = MM.mat;
-  const out = { objects: [], flows: { intake: [], throttle: null, exhaust: [] }, injTips: [], injAxis: [] };
-  const ghost = (geo, key, part, angle) => {
-    const m = new THREE.Mesh(geo, MM.ghost[key]); m.renderOrder = 2; ctx.tag(m, part, 'air');
-    const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo, angle || 30), MM.ghostEdges[key]);
-    e.renderOrder = 3; e.userData.pickable = false; ctx.tag(e, part, 'air');
-    out.objects.push(m, e); return m;
-  };
-  const solid = (geo, mat, part) => { const m = new THREE.Mesh(geo, mat); ctx.tag(m, part, 'air'); m.castShadow = m.receiveShadow = true; out.objects.push(m); return m; };
-  const L = (c, a, s, lx) => BUILD_B4.local(E, c, lx || 0, a, s);
-  const curve = pts => new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+const Geometry = window.Geometry;
+const Vector3 = THREE.Vector3;
+const builders = window.EngineBuilders.b4;
+const Banks = window.CylinderBanks;
+const PLENUM_Y = 158, PLENUM_X = [-112, 128];
+const INJECTOR_TILT = 40 * Math.PI / 180;
 
-  const PY = 158, PX = [-112, 128];
-  const plenum = G.extrudeX(G.roundRect(76, 116, 24), PX[0], PX[1], { curveSegments: 6 }); plenum.translate(0, PY, 0);
-  const throttle = G.merge([G.tubeX(27, 31, -152, PX[0], 40), G.tubeX(27, 38, -158, -152, 40)]).translate(0, PY + 2, 0);
+const smoothCurve = points => new THREE.CatmullRomCurve3(points, false, 'centripetal');
+
+function intakeSystem(spec, materials, ghost, solid, flows) {
+  const inBank = (cylinder, along, side) => Banks.point(spec, cylinder, 0, along, side);
+  const plenum = Geometry.extrudeAlongX(Geometry.roundedRect(76, 116, 24), PLENUM_X[0], PLENUM_X[1], { curveSegments: 6 }).translate(0, PLENUM_Y, 0);
+  const throttleBody = Geometry.mergeGeometries([
+    Geometry.tubeAlongX(27, 31, -152, PLENUM_X[0], 40), Geometry.tubeAlongX(27, 38, -158, -152, 40),
+  ]).translate(0, PLENUM_Y + 2, 0);
+
   const runners = [], flanges = [];
-  for (let c = 0; c < 4; c++) {
-    const pts = [L(c, 30, PY), L(c, 88, PY + 8), L(c, 160, PY + 26), L(c, 228, PY + 18), L(c, 268, PY - 10), L(c, 284, 116), L(c, 287, 92)];
-    runners.push(new THREE.TubeGeometry(curve(pts.slice(1)), 48, 20, 16, false));
-    const f = G.lathe([[0, 0], [27, 0], [27, 6], [0, 6]], 28); G.applyQ(f, BUILD_B4.bankQuat(E, c, Math.PI / 2));
-    const p = L(c, 287, 86); f.translate(p.x, p.y, p.z); flanges.push(f);
-    out.flows.intake.push(curve([new V3(E.cyl[c].x, PY + 4, 0), ...pts.slice(1)]));
-  }
-  ghost(G.merge([plenum, throttle]), 'intake', 'intake', 24);
-  ghost(G.merge(runners.concat(flanges)), 'intake', 'intake', 40);
-  const plate = new THREE.CylinderGeometry(26.6, 26.6, 1.6, 40); plate.rotateZ(Math.PI / 2); plate.rotateY(0.6); plate.translate(-136, PY + 2, 0);
-  const spindle = G.cylBetween(2.6, new V3(-136, PY + 2, -36), new V3(-136, PY + 2, 36), 10);
-  solid(G.merge([plate, spindle]), MM.hw.alu, 'intake');
-  out.flows.throttle = curve([new V3(-190, PY + 2, 0), new V3(-150, PY + 2, 0), new V3(-100, PY, 0), new V3(0, PY, 0), new V3(PX[1] - 12, PY, 0)]);
+  spec.cylinders.forEach((cylinder, index) => {
+    const points = [inBank(index, 30, PLENUM_Y), inBank(index, 88, PLENUM_Y + 8), inBank(index, 160, PLENUM_Y + 26), inBank(index, 228, PLENUM_Y + 18),
+      inBank(index, 268, PLENUM_Y - 10), inBank(index, 284, 116), inBank(index, 287, 92)];
+    runners.push(new THREE.TubeGeometry(smoothCurve(points.slice(1)), 48, 20, 16, false));
+    const flange = Geometry.lathe([[0, 0], [27, 0], [27, 6], [0, 6]], 28);
+    Geometry.applyQuaternion(flange, Banks.rotation(spec, index, Math.PI / 2));
+    const flangePoint = inBank(index, 287, 86);
+    flanges.push(flange.translate(flangePoint.x, flangePoint.y, flangePoint.z));
+    flows.intake.push(smoothCurve([new Vector3(cylinder.x, PLENUM_Y + 4, 0), ...points.slice(1)]));
+  });
+  ghost(Geometry.mergeGeometries([plenum, throttleBody]), 'intake', 'intake', 24);
+  ghost(Geometry.mergeGeometries(runners.concat(flanges)), 'intake', 'intake', 40);
 
-  const injA = 40 * Math.PI / 180, inj = [], seals = [], rails = [], railEnds = { R: [], L: [] };
-  for (let c = 0; c < 4; c++) {
-    const C = E.cyl[c], tip = L(c, 292, 100), q = BUILD_B4.bankQuat(E, c, injA);
-    const ax = new V3(0, 1, 0).applyQuaternion(q);
-    out.injTips.push(tip); out.injAxis.push(ax);
-    const b = G.merge([
-      G.lathe([[0, 0], [3.2, 0], [3.2, 7], [7.6, 9], [7.6, 46], [5.2, 48], [5.2, 62], [0, 62]], 28),
-      (() => { const g = new THREE.BoxGeometry(12, 10, 9); g.translate(0, 38, 9); return g; })(),
-    ]);
-    G.applyQ(b, q); b.translate(tip.x, tip.y, tip.z); inj.push(b);
-    const o = new THREE.TorusGeometry(5.6, 1.3, 8, 24); o.rotateX(Math.PI / 2); o.translate(0, 8, 0);
-    const cup = new THREE.CylinderGeometry(9, 9, 14, 24); cup.translate(0, 58, 0);
-    const s = G.merge([o, cup]); G.applyQ(s, q); s.translate(tip.x, tip.y, tip.z); seals.push(s);
-    railEnds[C.bank].push(tip.clone().addScaledVector(ax, 58));
-  }
-  for (const b of ['R', 'L']) {
-    const [p, r] = railEnds[b].sort((u, v) => u.x - v.x), y = p.y, z = p.z;
-    rails.push(G.cylX(8, p.x - 34, r.x + 30, 20).translate(0, y, z));
-    rails.push(G.cylX(10.5, p.x - 52, p.x - 34, 20).translate(0, y, z));
-    railEnds[b].far = new V3(r.x + 30, y, z);
-  }
-  const R0 = railEnds.R.far, L0 = railEnds.L.far, xb = PX[1] + 26;
-  const cross = curve([R0, new V3(R0.x + 30, R0.y + 4, R0.z * 0.9), new V3(xb, PY + 4, -120), new V3(xb + 4, PY + 8, 0),
-    new V3(xb, PY + 4, 120), new V3(L0.x + 24, L0.y + 4, L0.z * 0.9), L0]);
-  rails.push(new THREE.TubeGeometry(cross, 64, 3.6, 10, false));
-  solid(G.merge(inj), M.injector, 'injector');
-  solid(G.merge(seals.concat(rails)), M.fuelRail, 'injector');
+  const throttlePlate = new THREE.CylinderGeometry(26.6, 26.6, 1.6, 40);
+  throttlePlate.rotateZ(Math.PI / 2);
+  throttlePlate.rotateY(0.6);
+  throttlePlate.translate(-136, PLENUM_Y + 2, 0);
+  const spindle = Geometry.cylinderBetween(2.6, new Vector3(-136, PLENUM_Y + 2, -36), new Vector3(-136, PLENUM_Y + 2, 36), 10);
+  solid(Geometry.mergeGeometries([throttlePlate, spindle]), materials.hardware.aluminium, 'intake');
+  flows.throttle = smoothCurve([new Vector3(-190, PLENUM_Y + 2, 0), new Vector3(-150, PLENUM_Y + 2, 0), new Vector3(-100, PLENUM_Y, 0),
+    new Vector3(0, PLENUM_Y, 0), new Vector3(PLENUM_X[1] - 12, PLENUM_Y, 0)]);
+}
 
-  const pipes = [], coll = [];
-  for (const b of ['R', 'L']) {
-    const zs = b === 'R' ? -1 : 1, cyls = b === 'R' ? [0, 2] : [1, 3];
-    const xf = E.cyl[cyls[0]].x, xr = E.cyl[cyls[1]].x;
-    const cpts = [new V3(xf - 10, -214, zs * 250), new V3(xr + 20, -216, zs * 248), new V3(140, -224, zs * 214), new V3(186, -234, zs * 150),
-      new V3(232, -238, zs * 126), new V3(300, -238, zs * 126)];
-    coll.push(new THREE.TubeGeometry(curve(cpts), 80, 22, 16, false));
-    for (const c of cyls) {
-      const C = E.cyl[c];
-      const dpts = [L(c, 266, -97), L(c, 265, -128), L(c, 260, -162), L(c, 254, -190), new V3(C.x + 16, -212, zs * 249)];
-      pipes.push(new THREE.TubeGeometry(curve(dpts), 40, 17, 14, false));
-      const fl = G.lathe([[0, 0], [26, 0], [26, 6], [0, 6]], 28); G.applyQ(fl, BUILD_B4.bankQuat(E, c, -Math.PI / 2));
-      const p = L(c, 266, -96); fl.translate(p.x, p.y, p.z); pipes.push(fl);
-      const tail = cpts.filter(p => p.x > C.x + 16);
-      out.flows.exhaust[c] = curve(dpts.concat(tail));
+function fuelSystem(spec, materials, solid) {
+  const bodies = [], seals = [], rails = [], railEnds = { right: [], left: [] };
+  spec.cylinders.forEach((cylinder, index) => {
+    const tip = Banks.point(spec, index, 0, 292, 100);
+    const rotation = Banks.rotation(spec, index, INJECTOR_TILT);
+    const axis = new Vector3(0, 1, 0).applyQuaternion(rotation);
+    const place = geometry => {
+      Geometry.applyQuaternion(geometry, rotation);
+      return geometry.translate(tip.x, tip.y, tip.z);
+    };
+    bodies.push(place(Geometry.mergeGeometries([
+      Geometry.lathe([[0, 0], [3.2, 0], [3.2, 7], [7.6, 9], [7.6, 46], [5.2, 48], [5.2, 62], [0, 62]], 28),
+      new THREE.BoxGeometry(12, 10, 9).translate(0, 38, 9),
+    ])));
+    const oRing = new THREE.TorusGeometry(5.6, 1.3, 8, 24);
+    oRing.rotateX(Math.PI / 2);
+    oRing.translate(0, 8, 0);
+    seals.push(place(Geometry.mergeGeometries([oRing, new THREE.CylinderGeometry(9, 9, 14, 24).translate(0, 58, 0)])));
+    railEnds[cylinder.bank].push(tip.clone().addScaledVector(axis, 58));
+  });
+
+  const railFarEnd = {};
+  for (const bank of ['right', 'left']) {
+    const [front, rear] = railEnds[bank].sort((a, b) => a.x - b.x);
+    rails.push(Geometry.cylinderAlongX(8, front.x - 34, rear.x + 30, 20).translate(0, front.y, front.z));
+    rails.push(Geometry.cylinderAlongX(10.5, front.x - 52, front.x - 34, 20).translate(0, front.y, front.z));
+    railFarEnd[bank] = new Vector3(rear.x + 30, front.y, front.z);
+  }
+  const right = railFarEnd.right, left = railFarEnd.left, crossX = PLENUM_X[1] + 26;
+  const crossover = smoothCurve([right, new Vector3(right.x + 30, right.y + 4, right.z * 0.9), new Vector3(crossX, PLENUM_Y + 4, -120),
+    new Vector3(crossX + 4, PLENUM_Y + 8, 0), new Vector3(crossX, PLENUM_Y + 4, 120), new Vector3(left.x + 24, left.y + 4, left.z * 0.9), left]);
+  rails.push(new THREE.TubeGeometry(crossover, 64, 3.6, 10, false));
+  solid(Geometry.mergeGeometries(bodies), materials.solid.injector, 'injector');
+  solid(Geometry.mergeGeometries(seals.concat(rails)), materials.solid.fuelRail, 'injector');
+}
+
+function exhaustSystem(spec, ghost, flows) {
+  const inBank = (cylinder, along, side) => Banks.point(spec, cylinder, 0, along, side);
+  const tubes = [];
+  for (const bank of ['right', 'left']) {
+    const z = bank === 'right' ? -1 : 1;
+    const bankCylinders = spec.cylinders.filter(cylinder => cylinder.bank === bank);
+    const frontX = bankCylinders[0].x, rearX = bankCylinders[1].x;
+    const collector = [new Vector3(frontX - 10, -214, z * 250), new Vector3(rearX + 20, -216, z * 248), new Vector3(140, -224, z * 214),
+      new Vector3(186, -234, z * 150), new Vector3(232, -238, z * 126), new Vector3(300, -238, z * 126)];
+    tubes.push(new THREE.TubeGeometry(smoothCurve(collector), 80, 22, 16, false));
+    for (const cylinder of bankCylinders) {
+      const pipe = [inBank(cylinder.index, 266, -97), inBank(cylinder.index, 265, -128), inBank(cylinder.index, 260, -162),
+        inBank(cylinder.index, 254, -190), new Vector3(cylinder.x + 16, -212, z * 249)];
+      tubes.push(new THREE.TubeGeometry(smoothCurve(pipe), 40, 17, 14, false));
+      const flange = Geometry.lathe([[0, 0], [26, 0], [26, 6], [0, 6]], 28);
+      Geometry.applyQuaternion(flange, Banks.rotation(spec, cylinder.index, -Math.PI / 2));
+      const flangePoint = inBank(cylinder.index, 266, -96);
+      tubes.push(flange.translate(flangePoint.x, flangePoint.y, flangePoint.z));
+      flows.exhaust[cylinder.index] = smoothCurve(pipe.concat(collector.filter(point => point.x > cylinder.x + 16)));
     }
   }
-  ghost(G.merge(pipes.concat(coll)), 'exhaust', 'exhaust', 40);
-  out.update = function () {};
-  return out;
-};
+  ghost(Geometry.mergeGeometries(tubes), 'exhaust', 'exhaust', 40);
+}
+
+function airAndFuel({ spec, materials, tag }) {
+  const objects = [];
+  const flows = { intake: [], exhaust: [], throttle: null };
+  const ghost = (geometry, materialKey, part, edgeAngle) => {
+    const mesh = tag(new THREE.Mesh(geometry, materials.ghost[materialKey]), part, 'air');
+    mesh.renderOrder = 2;
+    const edges = tag(new THREE.LineSegments(new THREE.EdgesGeometry(geometry, edgeAngle || 30), materials.ghostEdges[materialKey]), part, 'air');
+    edges.renderOrder = 3;
+    edges.userData.pickable = false;
+    objects.push(mesh, edges);
+  };
+  const solid = (geometry, material, part) => {
+    const mesh = tag(new THREE.Mesh(geometry, material), part, 'air');
+    mesh.castShadow = mesh.receiveShadow = true;
+    objects.push(mesh);
+  };
+  intakeSystem(spec, materials, ghost, solid, flows);
+  fuelSystem(spec, materials, solid);
+  exhaustSystem(spec, ghost, flows);
+  return { objects, flows };
+}
+
+builders.airAndFuel = airAndFuel;
 })();
