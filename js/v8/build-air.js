@@ -1,112 +1,148 @@
+/*
+ * V-образный дизель: наддув и газовые тракты — два турбокомпрессора за маховиком (по одному на ряд),
+ * впускные и выпускные коллекторы рядов, общий воздухозаборник.
+ *
+ *   airSystem(context) → { objects, flows, update(crankAngle) }
+ *     flows — средние линии потоков для частиц: intake[ряд] — от заборника через компрессор в коллектор,
+ *             exhaust[ряд] — из коллектора через турбину в приёмную трубу;
+ *     update вращает роторы турбин. Скорость условная — 6 оборотов на оборот вала: настоящий ротор
+ *     крутится в десятки раз быстрее вала, и на экране его вращение было бы неразличимо.
+ *
+ *   turboWheel(blades, hubProfile, bladeOutline, twist, height) — колесо с закрученными лопатками
+ */
 (function () {
 'use strict';
-window.BUILD_V8 = window.BUILD_V8 || {};
-const V3 = THREE.Vector3;
 
-function wheel(blades, hubPts, bladePts, lean, yMax) {
-  const parts = [G.lathe(hubPts, 48)];
-  const shape = G.shapeFromPts(bladePts);
+const Geometry = window.Geometry;
+const Vector3 = THREE.Vector3;
+const Banks = window.CylinderBanks;
+const builders = window.EngineBuilders.v8;
+const TURBO_X = 585, TURBO_Y = 470, COMPRESSOR_Z = 135, TURBINE_WHEEL_Z = 230, TURBINE_Z = 238;
+const ROTOR_TURNS_PER_CRANK_TURN = 6;
+
+const smoothCurve = points => new THREE.CatmullRomCurve3(points, false, 'centripetal');
+const tubeAlong = (points, radius, segments) => new THREE.TubeGeometry(smoothCurve(points), segments || 48, radius, 16, false);
+const onTurboAxis = (geometry, z) => geometry.rotateX(Math.PI / 2).translate(TURBO_X, TURBO_Y, z);
+
+function turboWheel(blades, hubProfile, bladeOutline, twist, height) {
+  const parts = [Geometry.lathe(hubProfile, 48)];
+  const shape = Geometry.polygonShape(bladeOutline);
   for (let k = 0; k < blades; k++) {
-    const g = new THREE.ExtrudeGeometry(shape, { depth: 1.6, bevelEnabled: false, curveSegments: 1 });
-    g.translate(0, 0, -0.8);
-    const p = g.attributes.position, a0 = k / blades * Math.PI * 2;
-    for (let i = 0; i < p.count; i++) {
-      const r = p.getX(i), y = p.getY(i), t = p.getZ(i), a = a0 + lean * (y / yMax);
-      p.setXYZ(i, r * Math.cos(a) - t * Math.sin(a), y, r * Math.sin(a) + t * Math.cos(a));
+    const blade = new THREE.ExtrudeGeometry(shape, { depth: 1.6, bevelEnabled: false, curveSegments: 1 });
+    blade.translate(0, 0, -0.8);
+    const vertices = blade.attributes.position, baseAngle = k / blades * Math.PI * 2;
+    for (let i = 0; i < vertices.count; i++) {
+      const r = vertices.getX(i), y = vertices.getY(i), t = vertices.getZ(i), angle = baseAngle + twist * (y / height);
+      vertices.setXYZ(i, r * Math.cos(angle) - t * Math.sin(angle), y, r * Math.sin(angle) + t * Math.cos(angle));
     }
-    g.computeVertexNormals();
-    parts.push(g);
+    blade.computeVertexNormals();
+    parts.push(blade);
   }
-  return G.merge(parts);
+  return Geometry.mergeGeometries(parts);
 }
 
-BUILD_V8.air = function (ctx) {
-  const E = ctx.E, MM = ctx.M, M = MM.mat;
-  const out = { objects: [], spins: [], flows: { intake: [], exhaust: [] } };
-  const ghost = (geo, key, part, edgeAngle) => {
-    const m = new THREE.Mesh(geo, MM.ghost[key]); m.renderOrder = 2; ctx.tag(m, part, 'air');
-    const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo, edgeAngle || 30), MM.ghostEdges[key]); e.renderOrder = 3; e.userData.pickable = false; ctx.tag(e, part, 'air');
-    out.objects.push(m, e);
+function manifoldFlanges(spec, firstCylinder, size, center) {
+  return [0, 1, 2, 3].map(k => {
+    const cylinder = firstCylinder + k;
+    const flange = new THREE.BoxGeometry(size, size, 6).translate(...center);
+    Geometry.applyQuaternion(flange, Banks.rotation(spec, cylinder));
+    return flange.translate(spec.cylinders[cylinder].x, 0, 0);
+  });
+}
+
+function turboRotor(materials, mesh, side) {
+  const holder = new THREE.Group();
+  holder.position.set(TURBO_X, TURBO_Y, side * COMPRESSOR_Z);
+  holder.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(0, 0, side));
+  const spin = new THREE.Group();
+  holder.add(spin);
+  const compressorWheel = turboWheel(11, [[0, 0], [44, 0], [44, 3], [26, 10], [13, 25], [9, 34], [0, 34]],
+    [[42, 3], [42, 11], [33, 21], [27, 34], [10, 34], [13, 25.5], [25, 10.5]], -0.7, 34);
+  compressorWheel.rotateX(Math.PI);
+  const turbineWheel = turboWheel(12, [[0, 0], [40, 0], [40, 3], [22, 12], [11, 26], [9, 30], [0, 30]],
+    [[38, 3], [38, 10], [30, 20], [26, 30], [10, 30], [12, 25], [22, 11.5]], 0.45, 30);
+  turbineWheel.translate(0, TURBINE_WHEEL_Z - COMPRESSOR_Z, 0);
+  const shaft = new THREE.CylinderGeometry(6, 6, TURBINE_WHEEL_Z - COMPRESSOR_Z + 30, 16).translate(0, (TURBINE_WHEEL_Z - COMPRESSOR_Z) / 2, 0);
+  const nut = Geometry.hexPrism(12, 8);
+  nut.rotateX(Math.PI);
+  nut.translate(0, -34, 0);
+  spin.add(mesh(compressorWheel, materials.solid.compWheel, 'turbo'), mesh(turbineWheel, materials.solid.turbineWheel, 'turbo'));
+  spin.add(mesh(Geometry.mergeGeometries([shaft, nut]), materials.hardware.steel, 'turbo'));
+  return { holder, spin };
+}
+
+function airSystem({ spec, materials, tag }) {
+  const objects = [], spins = [];
+  const flows = { intake: [], exhaust: [] };
+  const ghost = (geometry, materialKey, part, edgeAngle) => {
+    const body = tag(new THREE.Mesh(geometry, materials.ghost[materialKey]), part, 'air');
+    body.renderOrder = 2;
+    const edges = tag(new THREE.LineSegments(new THREE.EdgesGeometry(geometry, edgeAngle || 30), materials.ghostEdges[materialKey]), part, 'air');
+    edges.renderOrder = 3;
+    edges.userData.pickable = false;
+    objects.push(body, edges);
   };
-  const solid = (geo, mat, part) => { const m = new THREE.Mesh(geo, mat); ctx.tag(m, part, 'air'); m.castShadow = m.receiveShadow = true; return m; };
-  const curve = pts => new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-  const tube = (pts, r, seg) => new THREE.TubeGeometry(curve(pts), seg || 48, r, 16, false);
-  const alongZ = (geo, z) => { geo.rotateX(Math.PI / 2); geo.translate(XT, YT, z); return geo; };
-  const XT = 585, YT = 470, ZC = 135, ZTW = 230, ZTV = 238;
-  out.turbo = { x: XT, y: YT };
+  const mesh = (geometry, material, part) => {
+    const result = tag(new THREE.Mesh(geometry, material), part, 'air');
+    result.castShadow = result.receiveShadow = true;
+    return result;
+  };
 
-  for (const bank of ['R', 'L']) {
-    const sz = bank === 'R' ? -1 : 1, c0 = bank === 'R' ? 0 : 4;
-    const pI = E.bankPoint(c0, 0, 468, 172), pE = E.bankPoint(c0, 0, 466, -128);
-    const YI = pI[1], ZI = pI[2], YE = pE[1], ZE = pE[2];
+  for (const bank of ['right', 'left']) {
+    const side = bank === 'right' ? -1 : 1, firstCylinder = bank === 'right' ? 0 : 4;
+    const [, intakeY, intakeZ] = spec.pointInBank(firstCylinder, 0, 468, 172);
+    const [, exhaustY, exhaustZ] = spec.pointInBank(firstCylinder, 0, 466, -128);
 
-    const imGeo = G.merge([G.cylX(30, -350, 350, 32, true), G.cylX(30, -356, -350, 32)]);
-    imGeo.translate(0, YI, ZI);
-    const flanges = [];
-    for (let k = 0; k < 4; k++) {
-      const c = c0 + k, q = BUILD_V8.bankQuat(E, c), C = E.cyl[c];
-      const f = new THREE.BoxGeometry(46, 46, 6); f.translate(-54, 468, 143); G.applyQ(f, q); f.translate(C.x, 0, 0); flanges.push(f);
-    }
-    ghost(G.merge([imGeo, ...flanges]), 'intake', 'intake', 35);
+    const intakeManifold = Geometry.mergeGeometries([Geometry.cylinderAlongX(30, -350, 350, 32, true), Geometry.cylinderAlongX(30, -356, -350, 32)])
+      .translate(0, intakeY, intakeZ);
+    ghost(Geometry.mergeGeometries([intakeManifold, ...manifoldFlanges(spec, firstCylinder, 46, [-54, 468, 143])]), 'intake', 'intake', 35);
 
-    const em = G.cylX(28, -320, 330, 32, true); em.translate(0, YE, ZE);
-    const capF = G.cylX(28, -326, -320, 32); capF.translate(0, YE, ZE);
-    const ef = [];
-    for (let k = 0; k < 4; k++) {
-      const c = c0 + k, q = BUILD_V8.bankQuat(E, c), C = E.cyl[c];
-      const f = new THREE.BoxGeometry(40, 40, 6); f.translate(34, 466, -97); G.applyQ(f, q); f.translate(C.x, 0, 0); ef.push(f);
-    }
-    const exPipePts = [new V3(320, YE, ZE), new V3(372, YE + 12, ZE - sz * 6), new V3(450, 300, sz * 380), new V3(520, 360, sz * 320),
-      new V3(556, 392, sz * (ZTV + 8)), new V3(XT - 8, YT - 60, sz * ZTV)];
-    ghost(G.merge([em, capF, ...ef, tube(exPipePts, 26, 64)]), 'exhaust', 'exhaust', 35);
-    const downPts = [new V3(XT, YT, sz * 312), new V3(XT, YT - 30, sz * 334), new V3(XT + 40, YT - 130, sz * 346)];
-    ghost(tube(downPts, 30, 24), 'exhaust', 'exhaust', 40);
+    const exhaustManifold = Geometry.cylinderAlongX(28, -320, 330, 32, true).translate(0, exhaustY, exhaustZ);
+    const exhaustCap = Geometry.cylinderAlongX(28, -326, -320, 32).translate(0, exhaustY, exhaustZ);
+    const toTurbine = [new Vector3(320, exhaustY, exhaustZ), new Vector3(372, exhaustY + 12, exhaustZ - side * 6), new Vector3(450, 300, side * 380),
+      new Vector3(520, 360, side * 320), new Vector3(556, 392, side * (TURBINE_Z + 8)), new Vector3(TURBO_X - 8, TURBO_Y - 60, side * TURBINE_Z)];
+    ghost(Geometry.mergeGeometries([exhaustManifold, exhaustCap, ...manifoldFlanges(spec, firstCylinder, 40, [34, 466, -97]), tubeAlong(toTurbine, 26, 64)]),
+      'exhaust', 'exhaust', 35);
+    const downpipe = [new Vector3(TURBO_X, TURBO_Y, side * 312), new Vector3(TURBO_X, TURBO_Y - 30, side * 334), new Vector3(TURBO_X + 40, TURBO_Y - 130, side * 346)];
+    ghost(tubeAlong(downpipe, 30, 24), 'exhaust', 'exhaust', 40);
 
-    const comp = new THREE.TorusGeometry(66, 25, 14, 48); comp.translate(XT, YT, sz * (ZC + 2));
-    const compBack = alongZ(G.lathe([[0, -5], [72, -5], [72, 5], [0, 5]], 48), sz * (ZC + 9));
-    const inlet = alongZ(new THREE.CylinderGeometry(36, 36, 52, 32, 1, true), sz * (ZC - 34));
-    const turb = new THREE.TorusGeometry(60, 27, 14, 48); turb.translate(XT, YT, sz * ZTV);
-    const tOut = alongZ(new THREE.CylinderGeometry(34, 34, 50, 32, 1, true), sz * 287);
-    const coPts = [new V3(XT + 6, YT + 66, sz * (ZC + 2)), new V3(XT - 50, YT + 74, sz * (ZC + 10)), new V3(470, YI + 50, sz * 190),
-      new V3(380, YI + 6, ZI), new V3(352, YI, ZI)];
-    ghost(G.merge([comp, compBack, inlet, turb, tOut, tube(coPts, 25, 56)]), 'turbo', 'turbo', 40);
-    out.objects.push(solid(G.merge([
-      alongZ(new THREE.CylinderGeometry(34, 34, 47, 32), sz * 186.5),
-      (() => { const g = new THREE.CylinderGeometry(9, 9, 60, 12); g.translate(XT, YT - 54, sz * 186.5); return g; })(),
-      (() => { const g = new THREE.CylinderGeometry(5, 5, 50, 12); g.translate(XT + 18, YT + 50, sz * 186.5); return g; })(),
-    ]), M.turboCore, 'turbo'));
+    const compressorVolute = new THREE.TorusGeometry(66, 25, 14, 48).translate(TURBO_X, TURBO_Y, side * (COMPRESSOR_Z + 2));
+    const compressorBack = onTurboAxis(Geometry.lathe([[0, -5], [72, -5], [72, 5], [0, 5]], 48), side * (COMPRESSOR_Z + 9));
+    const compressorInlet = onTurboAxis(new THREE.CylinderGeometry(36, 36, 52, 32, 1, true), side * (COMPRESSOR_Z - 34));
+    const turbineVolute = new THREE.TorusGeometry(60, 27, 14, 48).translate(TURBO_X, TURBO_Y, side * TURBINE_Z);
+    const turbineOutlet = onTurboAxis(new THREE.CylinderGeometry(34, 34, 50, 32, 1, true), side * 287);
+    const toManifold = [new Vector3(TURBO_X + 6, TURBO_Y + 66, side * (COMPRESSOR_Z + 2)), new Vector3(TURBO_X - 50, TURBO_Y + 74, side * (COMPRESSOR_Z + 10)),
+      new Vector3(470, intakeY + 50, side * 190), new Vector3(380, intakeY + 6, intakeZ), new Vector3(352, intakeY, intakeZ)];
+    ghost(Geometry.mergeGeometries([compressorVolute, compressorBack, compressorInlet, turbineVolute, turbineOutlet, tubeAlong(toManifold, 25, 56)]),
+      'turbo', 'turbo', 40);
+    objects.push(mesh(Geometry.mergeGeometries([
+      onTurboAxis(new THREE.CylinderGeometry(34, 34, 47, 32), side * 186.5),
+      new THREE.CylinderGeometry(9, 9, 60, 12).translate(TURBO_X, TURBO_Y - 54, side * 186.5),
+      new THREE.CylinderGeometry(5, 5, 50, 12).translate(TURBO_X + 18, TURBO_Y + 50, side * 186.5),
+    ]), materials.solid.turboCore, 'turbo'));
 
-    const holder = new THREE.Group();
-    holder.position.set(XT, YT, sz * ZC);
-    holder.quaternion.setFromUnitVectors(new V3(0, 1, 0), new V3(0, 0, sz));
-    const spin = new THREE.Group(); holder.add(spin);
-    const cw = wheel(11, [[0, 0], [44, 0], [44, 3], [26, 10], [13, 25], [9, 34], [0, 34]],
-      [[42, 3], [42, 11], [33, 21], [27, 34], [10, 34], [13, 25.5], [25, 10.5]], -0.7, 34);
-    cw.rotateX(Math.PI);
-    const tw = wheel(12, [[0, 0], [40, 0], [40, 3], [22, 12], [11, 26], [9, 30], [0, 30]],
-      [[38, 3], [38, 10], [30, 20], [26, 30], [10, 30], [12, 25], [22, 11.5]], 0.45, 30);
-    tw.translate(0, ZTW - ZC, 0);
-    spin.add(solid(cw, M.compWheel, 'turbo'), solid(tw, M.turbineWheel, 'turbo'));
-    spin.add(solid(G.merge([(() => { const g = new THREE.CylinderGeometry(6, 6, ZTW - ZC + 30, 16); g.translate(0, (ZTW - ZC) / 2, 0); return g; })(),
-      (() => { const g = G.hexPrism(12, 8); g.rotateX(Math.PI); g.translate(0, -34, 0); return g; })()]), MM.hw.steel, 'turbo'));
-    out.objects.push(holder);
-    out.spins.push(spin);
+    const rotor = turboRotor(materials, mesh, side);
+    objects.push(rotor.holder);
+    spins.push(rotor.spin);
 
-    out.flows.intake.push(curve([new V3(XT - 150, YT + 150, 0), new V3(XT - 60, YT + 138, 0), new V3(XT, YT + 96, 0), new V3(XT, YT + 22, sz * 12),
-      new V3(XT, YT, sz * 64), new V3(XT, YT, sz * (ZC - 30)), new V3(XT, YT + 34, sz * (ZC - 2)), ...coPts,
-      new V3(250, YI, ZI), new V3(-340, YI, ZI)]));
-    out.flows.exhaust.push(curve([new V3(-310, YE, ZE), new V3(200, YE, ZE), ...exPipePts, new V3(XT, YT - 22, sz * ZTV),
-      new V3(XT, YT, sz * 262), ...downPts]));
+    flows.intake.push(smoothCurve([new Vector3(TURBO_X - 150, TURBO_Y + 150, 0), new Vector3(TURBO_X - 60, TURBO_Y + 138, 0), new Vector3(TURBO_X, TURBO_Y + 96, 0),
+      new Vector3(TURBO_X, TURBO_Y + 22, side * 12), new Vector3(TURBO_X, TURBO_Y, side * 64), new Vector3(TURBO_X, TURBO_Y, side * (COMPRESSOR_Z - 30)),
+      new Vector3(TURBO_X, TURBO_Y + 34, side * (COMPRESSOR_Z - 2)), ...toManifold, new Vector3(250, intakeY, intakeZ), new Vector3(-340, intakeY, intakeZ)]));
+    flows.exhaust.push(smoothCurve([new Vector3(-310, exhaustY, exhaustZ), new Vector3(200, exhaustY, exhaustZ), ...toTurbine,
+      new Vector3(TURBO_X, TURBO_Y - 22, side * TURBINE_Z), new Vector3(TURBO_X, TURBO_Y, side * 262), ...downpipe]));
   }
 
-  ghost(G.merge([
-    alongZ(new THREE.CylinderGeometry(36, 36, 2 * (ZC - 60), 32, 1, true), 0),
-    tube([new V3(XT, YT + 20, 0), new V3(XT, YT + 96, 0), new V3(XT - 60, YT + 138, 0), new V3(XT - 150, YT + 150, 0)], 38, 32),
+  ghost(Geometry.mergeGeometries([
+    onTurboAxis(new THREE.CylinderGeometry(36, 36, 2 * (COMPRESSOR_Z - 60), 32, 1, true), 0),
+    tubeAlong([new Vector3(TURBO_X, TURBO_Y + 20, 0), new Vector3(TURBO_X, TURBO_Y + 96, 0), new Vector3(TURBO_X - 60, TURBO_Y + 138, 0),
+      new Vector3(TURBO_X - 150, TURBO_Y + 150, 0)], 38, 32),
   ]), 'intake', 'intake', 40);
 
-  out.update = function (theta) {
-    out.spins.forEach(s => { s.rotation.y = 6 * theta; });
+  return {
+    objects, flows,
+    update(crankAngle) { spins.forEach(spin => { spin.rotation.y = ROTOR_TURNS_PER_CRANK_TURN * crankAngle; }); },
   };
-  return out;
-};
+}
+
+builders.airSystem = airSystem;
 })();
