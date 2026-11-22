@@ -1,7 +1,13 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Анатомия ДВС</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans+Extra+Condensed:ital,wght@0,500;0,600;1,500;1,600&family=Fira+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="style.css">
+</head>
+<body>
 <svg width="0" height="0" style="position:absolute;color:var(--ink)" aria-hidden="true" focusable="false">
   <defs>
     <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -32,25 +38,19 @@
         <span>Оппозитный</span>
       </button>
     </div>
-    <span class="bar-note">3D-модели по сборочным чертежам</span>
   </header>
 
   <section class="menu paper" data-panel="menu" aria-labelledby="menuTitle">
     <div class="menu-inner">
       <header class="menu-head">
-        <p class="eyebrow">Главное меню</p>
         <h1 id="menuTitle">Анатомия двигателя внутреннего сгорания</h1>
-        <p class="lead">Три интерактивные модели, собранные по сборочным чертежам. Каждая деталь построена по размерам чертежа, а движение рассчитано точно: поршни, клапаны, шестерни и ремни подчиняются одним и тем же формулам и всегда синхронны. Выберите двигатель — вкладки сверху переключают их в любой момент.</p>
-        <div class="features" aria-label="Что есть в каждой модели">
-          <span>Точная кинематика</span><span>Разрезы корпуса</span><span>Выноски и спецификация</span><span>Фазы и индикаторная диаграмма</span><span>Газы и потоки</span>
-        </div>
+        <p class="lead">Три двигателя, построенные по сборочным чертежам в натуральных размерах. Поршни, клапаны, шестерни и ремни движутся по формулам из расчёта, давление и температура газа берутся из теплового расчёта цикла.</p>
       </header>
 
       <div class="cards">
         <article class="card" data-tab="i4" aria-labelledby="cardI4">
           <div class="art paper">
             <svg class="schem" viewBox="0 0 360 214" role="img" aria-label="Схема рядного четырёхцилиндрового двигателя, продольный разрез">
-              <!-- longitudinal section: head with the camshafts, four bores; crank throws 1 & 4 up, 2 & 3 down -->
               <path class="axis" d="M18 176H342"></path>
               <g class="axis"><path d="M79 14V208"></path><path d="M145 14V208"></path><path d="M211 14V208"></path><path d="M277 14V208"></path></g>
               <path class="cut ln" d="M40 34Q40 20 54 20H306Q320 20 320 34V40H40Z"></path>
@@ -73,21 +73,19 @@
             </svg>
           </div>
           <div class="card-body">
-            <p class="eyebrow">КП.2011.00.00.00.СБ</p>
-            <h2 id="cardI4">4-цилиндровый рядный</h2>
+            <h2 id="cardI4">4‑цилиндровый рядный</h2>
             <p class="desc">Бензиновый: два распредвала в головке, 16 клапанов, зубчатый ремень ГРМ с натяжителем, масляный насос на носке коленвала.</p>
             <dl class="facts">
               <div><dt>Цилиндр × ход</dt><dd>Ø72 × 69 мм</dd></div><div><dt>Рабочий объём</dt><dd>1124 см³</dd></div>
               <div><dt>Порядок работы</dt><dd>1-3-4-2</dd></div><div><dt>Позиций на чертеже</dt><dd>27</dd></div>
             </dl>
-            <button type="button" class="open">Открыть модель <span aria-hidden="true">→</span></button>
+            <button type="button" class="open">Открыть модель</button>
           </div>
         </article>
 
         <article class="card" data-tab="v8" aria-labelledby="cardV8">
           <div class="art paper">
             <svg class="schem" viewBox="0 0 360 214" role="img" aria-label="Схема V-образного восьмицилиндрового двигателя, поперечный разрез">
-              <!-- cross-section from the fan end: banks at 90°, two rods on one crank pin, camshaft and pump in the vee -->
               <path class="axis" d="M180 6V210"></path>
               <g class="axis"><path d="M180 152L64 36"></path><path d="M180 152L296 36"></path></g>
               <g transform="rotate(-45 180 152)">
@@ -122,20 +120,18 @@
             </svg>
           </div>
           <div class="card-body">
-            <p class="eyebrow">ДВС КР 09.00.00.00 СБ</p>
-            <h2 id="cardV8">V-образный 8-цилиндровый</h2>
+            <h2 id="cardV8">V‑образный 8‑цилиндровый</h2>
             <p class="desc">Дизель с турбонаддувом, развал 90°: распредвал в развале, толкатели, штанги и коромысла, ТНВД в развале, шестерни привода сзади, два турбокомпрессора.</p>
             <dl class="facts">
               <div><dt>Цилиндр × ход</dt><dd>Ø125 × 130 мм</dd></div><div><dt>Рабочий объём</dt><dd>12 763 см³</dd></div>
               <div><dt>Порядок работы</dt><dd>1-5-4-2-6-3-7-8</dd></div><div><dt>Позиций в модели</dt><dd>40</dd></div>
             </dl>
-            <button type="button" class="open">Открыть модель <span aria-hidden="true">→</span></button>
+            <button type="button" class="open">Открыть модель</button>
           </div>
         </article>
         <article class="card" data-tab="b4" aria-labelledby="cardB4">
           <div class="art paper">
             <svg class="schem" viewBox="0 0 360 214" role="img" aria-label="Схема оппозитного четырёхцилиндрового двигателя, поперечный разрез">
-              <!-- cross-section from the belt end: opposed bores on one crank, a camshaft in each head, intake arching over the top -->
               <path class="axis" d="M8 120H352"></path>
               <path class="axis" d="M180 8V210"></path>
               <path class="ln" d="M46 82C52 38 108 22 160 30M314 82C308 38 252 22 200 30"></path>
@@ -165,14 +161,13 @@
             </svg>
           </div>
           <div class="card-body">
-            <p class="eyebrow">Сборочный чертёж · 4 листа</p>
-            <h2 id="cardB4">Оппозитный 4-цилиндровый</h2>
+            <h2 id="cardB4">Оппозитный 4‑цилиндровый</h2>
             <p class="desc">Бензиновый «боксер»: цилиндры лежат друг против друга, по распредвалу в каждой головке, коромысла с регулировочными винтами, один зубчатый ремень на оба распредвала и насос.</p>
             <dl class="facts">
               <div><dt>Цилиндр × ход</dt><dd>Ø83 × 83 мм</dd></div><div><dt>Рабочий объём</dt><dd>1796 см³</dd></div>
               <div><dt>Порядок работы</dt><dd>1-3-2-4</dd></div><div><dt>Листов чертежа</dt><dd>4</dd></div>
             </dl>
-            <button type="button" class="open">Открыть модель <span aria-hidden="true">→</span></button>
+            <button type="button" class="open">Открыть модель</button>
           </div>
         </article>
       </div>
@@ -185,19 +180,17 @@
   <div class="app" data-panel="b4" id="panel-b4" role="tabpanel" aria-label="Оппозитный 4-цилиндровый" hidden></div>
 </div>
 
-<template id="engineTpl">
+<template id="engineTemplate">
   <main class="stage" data-role="stage">
     <div class="viewport" data-role="viewport"></div>
-    <svg class="callouts" data-role="callouts" role="group" aria-label="Позиции по спецификации"></svg>
     <div class="frame" aria-hidden="true"></div>
     <div class="loading" data-role="loading">Собираю двигатель…</div>
 
     <div class="stage-top">
-      <div class="brand"><b data-role="title"></b><span data-role="code"></span></div>
+      <div class="brand"><b data-role="title"></b></div>
       <div class="tools">
         <div class="seg" role="group" aria-label="Вид" data-role="views"></div>
         <div class="seg" role="group" aria-label="Корпусные детали" data-role="housing"></div>
-        <button type="button" class="chip" data-role="calloutBtn" aria-pressed="true">Позиции</button>
       </div>
     </div>
 
@@ -223,13 +216,6 @@
       </div>
       <div class="firing" data-role="firing" role="group" aria-label="Цилиндры"></div>
     </div>
-
-    <table class="stamp" data-role="stamp" aria-hidden="true">
-      <tr><td colspan="3" class="code" data-role="stampCode"></td></tr>
-      <tr><td rowspan="2" class="big" data-role="stampName"></td><td>Лит.</td><td>Масштаб</td></tr>
-      <tr><td>У</td><td>3D, мм</td></tr>
-      <tr><td>Сборочный чертёж</td><td colspan="2">Лист 1 · Листов 1</td></tr>
-    </table>
   </main>
 
   <aside class="sheet" aria-label="Параметры и спецификация">
@@ -243,7 +229,7 @@
         <div class="seg" role="group" aria-label="Замедление" data-role="slow"></div>
       </div>
       <div class="stats">
-        <div class="stat"><span class="v" data-role="powOut">0</span><span class="u">кВт, индикаторная мощность</span></div>
+        <div class="stat"><span class="v" data-role="powOut">0</span><span class="u">кВт, эффективная мощность</span></div>
         <div class="stat"><span class="v" data-role="trqOut">0</span><span class="u">Н·м, крутящий момент</span></div>
       </div>
     </section>
@@ -252,7 +238,7 @@
       <h2>Цилиндр <small>по клику на цилиндр или газ</small></h2>
       <div class="row2">
         <div class="seg" role="group" aria-label="Цилиндр" data-role="cylSel"></div>
-        <span class="stroke-pill" data-role="strokePill"><i></i><span data-role="strokeName">—</span></span>
+        <span class="stroke-now"><i data-role="strokeMark"></i><span data-role="strokeName">—</span></span>
       </div>
       <div class="stats">
         <div class="stat"><span class="v" data-role="pOut">0</span><span class="u">бар, давление</span></div>
@@ -284,13 +270,6 @@
     <section>
       <h2>Слои и материалы</h2>
       <div class="checks" data-role="layers"></div>
-      <div class="row2">
-        <span class="note">Окраска деталей</span>
-        <div class="seg" role="group" aria-label="Окраска" data-role="palette">
-          <button type="button" data-pal="metal" aria-pressed="true">Металл</button>
-          <button type="button" data-pal="nodes" aria-pressed="false">По узлам</button>
-        </div>
-      </div>
     </section>
 
     <footer data-role="footer"></footer>
@@ -301,8 +280,18 @@
 <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://unpkg.com/three@0.128.0/examples/js/environments/RoomEnvironment.js"></script>
 <script src="https://unpkg.com/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
-<script src="js/geom.js"></script>
+<script src="js/ice-core.js"></script>
+<script src="js/shared/math.js"></script>
+<script src="js/shared/belt.js"></script>
+<script src="js/shared/geometry.js"></script>
+<script src="js/shared/materials.js"></script>
+<script src="js/shared/engine-scene.js"></script>
+<script src="js/shared/gas-effects.js"></script>
+<script src="js/shared/banks.js"></script>
 <script src="js/i4/spec.js"></script>
+<script src="js/b4/spec.js"></script>
+<script src="js/v8/spec.js"></script>
+<script src="js/physics.js"></script>
 <script src="js/i4/materials.js"></script>
 <script src="js/i4/build-crank.js"></script>
 <script src="js/i4/build-pistons.js"></script>
@@ -311,20 +300,18 @@
 <script src="js/i4/build-housings.js"></script>
 <script src="js/i4/build-aux.js"></script>
 <script src="js/i4/build-gas.js"></script>
-<script src="js/i4/engine.js"></script>
-<script src="js/v8/spec.js"></script>
+<script src="js/i4/scene.js"></script>
 <script src="js/v8/materials.js"></script>
 <script src="js/v8/build-crank.js"></script>
 <script src="js/v8/build-pistons.js"></script>
 <script src="js/v8/build-valvetrain.js"></script>
-<script src="js/v8/build-timing.js"></script>
+<script src="js/v8/build-gears.js"></script>
 <script src="js/v8/build-fuel.js"></script>
 <script src="js/v8/build-aux.js"></script>
 <script src="js/v8/build-air.js"></script>
 <script src="js/v8/build-housings.js"></script>
 <script src="js/v8/build-gas.js"></script>
-<script src="js/v8/engine.js"></script>
-<script src="js/b4/spec.js"></script>
+<script src="js/v8/scene.js"></script>
 <script src="js/b4/materials.js"></script>
 <script src="js/b4/build-crank.js"></script>
 <script src="js/b4/build-pistons.js"></script>
@@ -334,8 +321,10 @@
 <script src="js/b4/build-aux.js"></script>
 <script src="js/b4/build-air.js"></script>
 <script src="js/b4/build-gas.js"></script>
-<script src="js/b4/engine.js"></script>
-<script src="js/charts.js"></script>
-<script src="js/ui.js"></script>
-
-</body></html>
+<script src="js/b4/scene.js"></script>
+<script src="js/ui/profiles.js"></script>
+<script src="js/ui/charts.js"></script>
+<script src="js/ui/engine-panel.js"></script>
+<script src="js/ui/app.js"></script>
+</body>
+</html>
